@@ -12,6 +12,7 @@ package ort
 import "core:c"
 import "core:dynlib"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 
 API_VERSION :: 27
@@ -124,7 +125,11 @@ check :: proc(rt: ^Runtime, s: ^Status, what: string) -> Error {
 }
 
 init :: proc(rt: ^Runtime, library_path: string) -> Error {
-	library, ok := dynlib.load_library(library_path)
+	// A hardened-runtime process (macOS, as a notarized app embedding ottis
+	// is) refuses to dlopen a relative path, and a data dir may be one.
+	path, aerr := os.get_absolute_path(library_path, context.temp_allocator)
+	if aerr != nil do path = library_path
+	library, ok := dynlib.load_library(path)
 	if !ok do return fmt.aprintf("loading %s: %s", library_path, dynlib.last_error())
 	rt.library = library
 	symbol, found := dynlib.symbol_address(library, "OrtGetApiBase")

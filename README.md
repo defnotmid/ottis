@@ -62,6 +62,12 @@ run alone. Each call uses `pocket.THREADS` (4) runtime threads per graph.
 store of synthesized lines keys on it, the pins in `assets`, the text, the
 voice and the options.
 
+On macOS, an app signed with the hardened runtime (as notarization
+requires) needs the `com.apple.security.cs.disable-library-validation`
+entitlement: the ONNX Runtime library ottis downloads is signed by
+Microsoft, and library validation only loads libraries signed by the app's
+own team.
+
 Layout: `assets/` (pins, download, archive extraction), `ort/` (ONNX
 Runtime C API, loaded at run time), `spm/` (SentencePiece Unigram
 tokenizer), `pocket/` (chunking, generation), `align/` (resampling, CTC

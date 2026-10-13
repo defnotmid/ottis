@@ -83,10 +83,10 @@ word timings; `g2p_en` for the OOV model.
 
 ## Milestone 0: speaking through onnxruntime
 
-**Status (2026-10-12): working on Linux x64.** `ottis say` produces speech
-that Whisper small.en transcribes word for word, with word timings from
-forced alignment, deterministic per seed across runs (threads fixed at 4:
-at 8 or more ONNX Runtime gives other samples).
+**Status (2026-10-13): working on Linux x64 and macOS arm64.** `ottis say`
+produces speech that Whisper small.en transcribes word for word, with word
+timings from forced alignment, deterministic per seed across runs (threads
+fixed at 4: at 8 or more ONNX Runtime gives other samples).
 
 What landed differs from the sketch below in three ways:
 
