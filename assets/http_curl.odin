@@ -27,8 +27,9 @@ curl_write :: proc "c" (data: [^]u8, size, count: c.size_t, user: rawptr) -> c.s
 	return c.size_t(n)
 }
 
-// Streams `url` (redirects followed, HTTP errors are failures) into `sink`.
-http_get :: proc(url: string, sink: ^Sink) -> Error {
+// Streams `url` (redirects followed, HTTP errors are failures) into `sink`,
+// identifying itself to the server as `agent`.
+http_get :: proc(url: string, sink: ^Sink, agent := "ottis") -> Error {
 	@(static) initialized: bool
 	if !initialized {
 		curl.global_init(curl.GLOBAL_DEFAULT)
@@ -42,7 +43,10 @@ http_get :: proc(url: string, sink: ^Sink) -> Error {
 	curl.easy_setopt(h, .URL, strings.clone_to_cstring(url, context.temp_allocator))
 	curl.easy_setopt(h, .FOLLOWLOCATION, c.long(1))
 	curl.easy_setopt(h, .FAILONERROR, c.long(1))
-	curl.easy_setopt(h, .USERAGENT, cstring("ottis"))
+	curl.easy_setopt(h, .USERAGENT, strings.clone_to_cstring(agent, context.temp_allocator))
+	curl.easy_setopt(h, .CONNECTTIMEOUT, c.long(CONNECT_TIMEOUT_S))
+	curl.easy_setopt(h, .LOW_SPEED_LIMIT, c.long(1))
+	curl.easy_setopt(h, .LOW_SPEED_TIME, c.long(STALL_TIMEOUT_S))
 	curl.easy_setopt(h, .WRITEFUNCTION, curl_write)
 	curl.easy_setopt(h, .WRITEDATA, rawptr(&cs))
 	code := curl.easy_perform(h)

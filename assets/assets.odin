@@ -31,6 +31,11 @@ path_in :: proc(root, rel: string, allocator := context.temp_allocator) -> strin
 	return p
 }
 
+// http_get gives up on a connection not made within CONNECT_TIMEOUT_S, and
+// on a transfer that receives nothing for STALL_TIMEOUT_S.
+CONNECT_TIMEOUT_S :: 15
+STALL_TIMEOUT_S :: 30
+
 // Download destination: bytes go to a file and through SHA-256 together.
 Sink :: struct {
 	file:    ^os.File,

@@ -21,6 +21,7 @@ foreign winhttp {
 	WinHttpReceiveResponse :: proc(request: HINTERNET, reserved: rawptr) -> win32.BOOL ---
 	WinHttpQueryHeaders :: proc(request: HINTERNET, info_level: win32.DWORD, name: win32.LPCWSTR, buffer: rawptr, buffer_length: ^win32.DWORD, index: ^win32.DWORD) -> win32.BOOL ---
 	WinHttpReadData :: proc(request: HINTERNET, buffer: rawptr, to_read: win32.DWORD, read: ^win32.DWORD) -> win32.BOOL ---
+	WinHttpSetTimeouts :: proc(h: HINTERNET, resolve, connect, send, receive: i32) -> win32.BOOL ---
 	WinHttpCloseHandle :: proc(h: HINTERNET) -> win32.BOOL ---
 }
 
@@ -29,8 +30,9 @@ foreign winhttp {
 @(private) WINHTTP_QUERY_STATUS_CODE :: 19
 @(private) WINHTTP_QUERY_FLAG_NUMBER :: 0x20000000
 
-// Streams `url` (https only; WinHTTP follows redirects) into `sink`.
-http_get :: proc(url: string, sink: ^Sink) -> Error {
+// Streams `url` (https only; WinHTTP follows redirects) into `sink`,
+// identifying itself to the server as `agent`.
+http_get :: proc(url: string, sink: ^Sink, agent := "ottis") -> Error {
 	if !strings.has_prefix(url, "https://") do return fmt.aprintf("only https URLs are fetched: %s", url)
 	rest := url[len("https://"):]
 	slash := strings.index_byte(rest, '/')
@@ -38,9 +40,14 @@ http_get :: proc(url: string, sink: ^Sink) -> Error {
 	if slash >= 0 do host, object = rest[:slash], rest[slash:]
 
 	wide :: proc(s: string) -> win32.LPCWSTR {return win32.utf8_to_wstring(s, context.temp_allocator)}
-	session := WinHttpOpen(wide("ottis"), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nil, nil, 0)
+	session := WinHttpOpen(wide(agent), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nil, nil, 0)
 	if session == nil do return fmt.aprintf("WinHttpOpen failed (%d)", win32.GetLastError())
 	defer WinHttpCloseHandle(session)
+	// Milliseconds; the receive timeout bounds each read, so a stalled
+	// transfer fails as curl's low-speed limit makes it fail elsewhere.
+	CONNECT_MS :: CONNECT_TIMEOUT_S * 1000
+	STALL_MS :: STALL_TIMEOUT_S * 1000
+	WinHttpSetTimeouts(session, CONNECT_MS, CONNECT_MS, STALL_MS, STALL_MS)
 	connect := WinHttpConnect(session, wide(host), 443, 0)
 	if connect == nil do return fmt.aprintf("connecting to %s failed (%d)", host, win32.GetLastError())
 	defer WinHttpCloseHandle(connect)
