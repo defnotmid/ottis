@@ -23,9 +23,12 @@ presenting generated audio as genuine recordings of real people or events.
 - **Pocket TTS** (github.com/kyutai-labs/pocket-tts, MIT, Kyutai): text
   preparation and chunking, the generation loop's end-of-speech rule and
   lengths, and the decoder fade-in (`pocket/text.odin`, `pocket/tts.odin`).
+  Its licence, from kyutai-labs/pocket-tts at b94db17:
+  `LICENSES/pocket-tts-MIT.txt`.
 - **torchaudio's CTC forced alignment** (BSD-2-Clause): the Viterbi
   formulation `align/align.odin` follows (reimplemented).
 - **SentencePiece** (github.com/google/sentencepiece, Apache-2.0): the Unigram
   Viterbi encoding `spm/spm.odin` reproduces (reimplemented, not copied).
-- **dangersnail** (`../dangersnail/extras/onnx_runtime`): the ONNX Runtime C
-  API slot table.
+- **ONNX Runtime's C API** (github.com/microsoft/onnxruntime, MIT): the
+  function table slots in `ort/ort.odin` follow `OrtApi`'s field order in
+  `onnxruntime_c_api.h`.

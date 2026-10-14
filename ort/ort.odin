@@ -2,7 +2,7 @@
 // `ottis fetch` placed, so building ottis needs no ONNX Runtime and the
 // process links none. The API is one function table reached through
 // OrtGetApiBase; the slots below are API 27's (unchanged through 30),
-// as in ../dangersnail/extras/onnx_runtime/bindings.odin.
+// in OrtApi's field order from onnxruntime_c_api.h.
 //
 // Values are ORT's own: a session's outputs are allocated by ORT and can be
 // fed straight back as the next run's inputs (the model's state), and
