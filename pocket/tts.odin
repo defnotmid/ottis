@@ -9,18 +9,21 @@ package pocket
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:time"
 import "../align"
 import "../assets"
 import "../ort"
 import "../spm"
+import wav "../wav"
 
 MIN_FRAMES_BEFORE_EOS :: 6
 EOS_THRESHOLD :: -4.0
 TOKENS_PER_SECOND :: 3.0
 GEN_SECONDS_PADDING :: 2.0
 DECODE_FRAMES :: 12
+MAX_VOICE_SECONDS :: 30
 
 // ONNX Runtime intra-op threads per graph, fixed: the runtime partitions
 // some operators by thread count, so 8 or more threads give different
@@ -84,9 +87,11 @@ Engine :: struct {
 	main:        ort.Model,
 	flow:        ort.Model,
 	decoder:     ort.Model,
+	encoder:     ort.Model,
 	tok:         spm.Model,
 	bundle:      Bundle,
 	mimi:        Host_State, // decoder state at the start of a chunk
+	bos_voice:   []f32,      // [1, 1, conditioning_dim] when insert_bos_before_voice
 
 	main_in:     []int, // per backbone state entry: model input index
 	main_out:    []int, // ...and output index
@@ -127,6 +132,10 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	e.main = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_main.onnx"), opts) or_return
 	e.flow = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_flow.onnx"), opts) or_return
 	e.decoder = ort.load_model(&e.rt, assets.path_in(root, dir + "mimi_decoder.onnx"), opts) or_return
+	e.encoder = ort.load_model(&e.rt, assets.path_in(root, dir + "mimi_encoder.onnx"), opts) or_return
+	if len(e.encoder.inputs) != 1 || len(e.encoder.outputs) != 1 {
+		return "mimi_encoder: expected one input and one output"
+	}
 
 	tok_data := read(root, dir + "tokenizer.model") or_return
 	defer delete(tok_data)
@@ -138,6 +147,18 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	defer delete(bundle_data)
 	e.bundle = parse_bundle(bundle_data) or_return
 	if e.bundle.bundle_name != assets.BUNDLE_NAME do return fmt.aprintf("bundle is %s, expected %s", e.bundle.bundle_name, assets.BUNDLE_NAME)
+
+	if e.bundle.insert_bos_before_voice {
+		bos_data := read(root, dir + "bos_before_voice.npy") or_return
+		defer delete(bos_data)
+		bos_vals, bos_shape := parse_npy_f32(bos_data) or_return
+		defer delete(bos_shape)
+		if len(bos_vals) != e.bundle.conditioning_dim {
+			delete(bos_vals)
+			return fmt.aprintf("bos_before_voice.npy has %d floats, expected %d", len(bos_vals), e.bundle.conditioning_dim)
+		}
+		e.bos_voice = bos_vals
+	}
 
 	e.mimi = host_state_init(e.bundle.mimi_state_manifest) or_return
 
@@ -204,9 +225,11 @@ engine_destroy :: proc(e: ^Engine) {
 	ort.unload_model(&e.main)
 	ort.unload_model(&e.flow)
 	ort.unload_model(&e.decoder)
+	ort.unload_model(&e.encoder)
 	align.destroy(&e.aligner)
 	spm.destroy(&e.tok)
 	host_state_destroy(&e.mimi)
+	delete(e.bos_voice)
 	delete(e.main_in)
 	delete(e.main_out)
 	delete(e.dec_in)
@@ -242,23 +265,169 @@ advance :: proc(e: ^Engine, state: []^ort.Value, outputs: []^ort.Value, out_inde
 	}
 }
 
-// A speaker: the backbone's state after Kyutai's precomputed prompt for
-// that voice (`assets.VOICES`), loaded once and shared by every synthesis.
+// A speaker: the backbone's state after a voice prompt (either one of
+// Kyutai's precomputed prompts in `assets.VOICES` or a cloned recording),
+// loaded once and shared by every synthesis.
 Voice :: struct {
 	name:  string,
 	state: Host_State,
 }
 
-voice_load :: proc(e: ^Engine, root, name: string) -> (v: Voice, err: Error) {
-	pin, known := assets.voice_pin(name)
-	if !known do return v, fmt.aprintf("unknown voice %q", name)
-	data := read(root, pin.path) or_return
+// Loads a voice by name (`assets.VOICES`), from a `.safetensors` file, or
+// by cloning an audio file (`.wav`, `.flac`, `.mp3`, `.ogg`).
+voice_load :: proc(e: ^Engine, root, name_or_path: string) -> (v: Voice, err: Error) {
+	if pin, known := assets.voice_pin(name_or_path); known {
+		data := read(root, pin.path) or_return
+		defer delete(data)
+		return voice_from_safetensors_bytes(e, data, name_or_path)
+	}
+	if strings.has_suffix(strings.to_lower(name_or_path, context.temp_allocator), ".safetensors") {
+		return voice_load_safetensors(e, name_or_path)
+	}
+	if os.exists(name_or_path) {
+		return voice_clone_file(e, name_or_path)
+	}
+	return v, fmt.aprintf("unknown voice or missing file %q", name_or_path)
+}
+
+voice_load_safetensors :: proc(e: ^Engine, path: string, name := "") -> (v: Voice, err: Error) {
+	data, rerr := os.read_entire_file(path, context.allocator)
+	if rerr != nil do return v, fmt.aprintf("reading %s: %v", path, rerr)
 	defer delete(data)
+	label := name if name != "" else filepath.stem(path)
+	return voice_from_safetensors_bytes(e, data, label)
+}
+
+@(private)
+voice_from_safetensors_bytes :: proc(e: ^Engine, data: []u8, name: string) -> (v: Voice, err: Error) {
 	tensors := parse_safetensors(data) or_return
 	defer destroy_safetensors(&tensors)
 	v.name = strings.clone(name)
 	v.state = host_state_init(e.bundle.flow_lm_state_manifest, &tensors) or_return
 	return v, nil
+}
+
+// Clones a voice from an audio file (WAV, FLAC, MP3, Ogg Vorbis).
+voice_clone_file :: proc(e: ^Engine, path: string, name := "") -> (v: Voice, err: Error) {
+	samples, rate := wav.read(path, context.temp_allocator) or_return
+	label := name if name != "" else filepath.stem(path)
+	return voice_clone(e, samples, rate, label)
+}
+
+// Clones a voice from mono f32 `samples` at `sample_rate` Hz: truncates to
+// 30 s, resamples to 24 kHz, trims trailing silence with `end_on_pause`,
+// encodes through `mimi_encoder` and runs the backbone over the voice prompt.
+voice_clone :: proc(e: ^Engine, samples: []f32, sample_rate: int, name := "cloned") -> (v: Voice, err: Error) {
+	if len(samples) == 0 || sample_rate <= 0 do return v, "empty voice prompt"
+	src := samples
+	if max_samples := MAX_VOICE_SECONDS * sample_rate; len(src) > max_samples {
+		src = src[:max_samples]
+	}
+	resampled := align.resample(src, sample_rate, e.bundle.sample_rate, context.temp_allocator)
+	audio := end_on_pause(resampled, e.bundle.sample_rate, context.temp_allocator)
+	if len(audio) < e.bundle.samples_per_frame {
+		return v, "voice prompt is shorter than one frame (80 ms)"
+	}
+
+	rt := &e.rt
+	audio_val := ort.tensor_f32(rt, audio, {1, 1, i64(len(audio))}) or_return
+	defer ort.release(rt, audio_val)
+	enc_out: [1]^ort.Value
+	ort.run(&e.encoder, {audio_val}, enc_out[:]) or_return
+	defer ort.release(rt, enc_out[0])
+
+	shape_buf: [8]i64
+	cond_view := ort.view(rt, enc_out[0], shape_buf[:]) or_return
+	cond_floats := ort.view_f32(cond_view)
+	dim := e.bundle.conditioning_dim
+	if len(cond_view.shape) != 3 || int(cond_view.shape[2]) != dim {
+		return v, fmt.aprintf("mimi_encoder output has unexpected shape %v", cond_view.shape)
+	}
+	n_cond := int(cond_view.shape[1])
+
+	prompt_frames := n_cond + (1 if e.bundle.insert_bos_before_voice else 0)
+	prompt := make([]f32, prompt_frames * dim, context.temp_allocator)
+	offset := 0
+	if e.bundle.insert_bos_before_voice {
+		copy(prompt[:dim], e.bos_voice)
+		offset = dim
+	}
+	copy(prompt[offset:], cond_floats)
+
+	prompt_val := ort.tensor_f32(rt, prompt, {1, i64(prompt_frames), i64(dim)}) or_return
+	defer ort.release(rt, prompt_val)
+	empty_seq := ort.tensor(rt, nil, 0, {1, 0, i64(e.bundle.latent_dim)}, .Float32) or_return
+	defer ort.release(rt, empty_seq)
+
+	blank := host_state_init(e.bundle.flow_lm_state_manifest) or_return
+	defer host_state_destroy(&blank)
+	n_state := len(e.main_in)
+	state := make([]^ort.Value, n_state, context.temp_allocator)
+	borrow_state(e, &blank, state) or_return
+	defer release_all(e, state)
+
+	inputs := make([]^ort.Value, len(e.main.inputs), context.temp_allocator)
+	outputs := make([]^ort.Value, len(e.main.outputs), context.temp_allocator)
+	inputs[e.main_seq] = empty_seq
+	inputs[e.main_text] = prompt_val
+	for sv, i in state do inputs[e.main_in[i]] = sv
+	ort.run(&e.main, inputs, outputs) or_return
+	advance(e, state, outputs, e.main_out)
+	release_all(e, outputs)
+
+	v.state = host_state_from_values(rt, e.bundle.flow_lm_state_manifest, state) or_return
+	v.name = strings.clone(name)
+	return v, nil
+}
+
+// Saves a voice's backbone KV cache as a `.safetensors` file that
+// `voice_load` or `voice_load_safetensors` can reload directly.
+voice_save :: proc(e: ^Engine, v: ^Voice, path: string) -> Error {
+	bytes := host_state_encode_safetensors(e.bundle.flow_lm_state_manifest, &v.state, context.temp_allocator)
+	if err := os.write_entire_file(path, bytes); err != nil {
+		return fmt.aprintf("writing %s: %v", path, err)
+	}
+	return nil
+}
+
+// Ends a voice prompt on `pause_sec` (80 ms) of silence after cutting
+// trailing 20 ms frames more than `floor_db` (35 dB) below the loudest
+// frame and fading out the last `fade_sec` (20 ms), matching upstream's
+// `pocket_tts/data/audio_utils.py:end_on_pause`.
+@(private)
+end_on_pause :: proc(wav: []f32, sample_rate: int, allocator := context.allocator, pause_sec := 0.08, fade_sec := 0.02, floor_db: f32 = 35.0) -> []f32 {
+	frame := max(1, int(0.02 * f64(sample_rate)))
+	n := len(wav) / frame
+	if n == 0 {
+		out := make([]f32, len(wav), allocator)
+		copy(out, wav)
+		return out
+	}
+	db := make([]f32, n, context.temp_allocator)
+	max_db: f32 = -1e30
+	for i in 0 ..< n {
+		sum: f32
+		for s in wav[i * frame:][:frame] do sum += s * s
+		rms := math.sqrt(sum / f32(frame))
+		db[i] = 20 * math.log10(rms + 1e-12)
+		if db[i] > max_db do max_db = db[i]
+	}
+	last_loud := 0
+	for i in 0 ..< n {
+		if db[i] > max_db - floor_db do last_loud = i
+	}
+	end := (last_loud + 1) * frame
+	pause := int(pause_sec * f64(sample_rate))
+	out := make([]f32, end + pause, allocator)
+	copy(out[:end], wav[:end])
+	fade := min(int(fade_sec * f64(sample_rate)), end)
+	if fade > 0 {
+		denom := f32(max(fade - 1, 1))
+		for i in 0 ..< fade {
+			out[end - fade + i] *= f32(fade - 1 - i) / denom
+		}
+	}
+	return out
 }
 
 voice_destroy :: proc(v: ^Voice) {

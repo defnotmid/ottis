@@ -13,12 +13,13 @@ import "core:strings"
 import "core:time"
 import "assets"
 import "pocket"
-import "wav"
+import wav "wav"
 
 USAGE :: `usage:
-  ottis say TEXT [-o out.wav] [-words out.json] [-voice NAME] [-seed N]
+  ottis say TEXT [-o out.wav] [-words out.json] [-voice NAME|FILE] [-seed N]
                  [-temperature T]
   ottis say -f FILE ...        text from a file ("-" for stdin)
+  ottis clone AUDIO [-o out.safetensors]
   ottis fetch [-voice NAME] [-verify]
   ottis voices
 common: -data DIR (default $OTTIS_DATA, else the user data directory)`
@@ -35,7 +36,7 @@ fail :: proc(format: string, args: ..any) -> ! {
 }
 
 parse_args :: proc() -> Args {
-	a := Args{voice = assets.DEFAULT_VOICE, out = "out.wav", options = pocket.DEFAULT_OPTIONS}
+	a := Args{voice = assets.DEFAULT_VOICE, options = pocket.DEFAULT_OPTIONS}
 	argv := os.args[1:]
 	if len(argv) == 0 do fail(USAGE)
 	a.command = argv[0]
@@ -88,6 +89,8 @@ main :: proc() {
 		library, err := assets.fetch(root, a.voice, a.verify, progress)
 		if err != nil do fail("%s", err.?)
 		fmt.printfln("ready in %s (%s)", root, library)
+	case "clone":
+		clone(a, root)
 	case "say":
 		say(a, root)
 	case:
@@ -95,7 +98,29 @@ main :: proc() {
 	}
 }
 
+clone :: proc(a: Args, root: string) {
+	if a.text == "" do fail("missing audio file\n%s", USAGE)
+	out := a.out if a.out != "" else "voice.safetensors"
+
+	library, ferr := assets.fetch(root, "", false, progress)
+	if ferr != nil do fail("%s", ferr.?)
+
+	engine: pocket.Engine
+	if err := pocket.engine_init(&engine, root, library); err != nil do fail("%s", err.?)
+	defer pocket.engine_destroy(&engine)
+
+	start := time.tick_now()
+	voice, verr := pocket.voice_clone_file(&engine, a.text)
+	if verr != nil do fail("%s", verr.?)
+	defer pocket.voice_destroy(&voice)
+	elapsed := time.tick_since(start)
+
+	if err := pocket.voice_save(&engine, &voice, out); err != nil do fail("%s", err.?)
+	fmt.printfln("%s: cloned %s in %.0f ms", out, a.text, time.duration_milliseconds(elapsed))
+}
+
 say :: proc(a: Args, root: string) {
+	out := a.out if a.out != "" else "out.wav"
 	text := a.text
 	if a.text_file != "" {
 		data: []u8
@@ -128,7 +153,7 @@ say :: proc(a: Args, root: string) {
 	if err := pocket.synthesize(&engine, &voice, text, a.options, &result); err != nil do fail("%s", err.?)
 	wall := time.tick_since(start)
 
-	if err := wav.write_pcm16(a.out, result.audio[:], result.sample_rate); err != nil do fail("writing %s: %v", a.out, err)
+	if err := wav.write_pcm16(out, result.audio[:], result.sample_rate); err != nil do fail("writing %s: %v", out, err)
 	if a.words != "" {
 		if err := os.write_entire_file(a.words, words_json(text, &result)); err != nil do fail("writing %s: %v", a.words, err)
 	}
@@ -136,7 +161,7 @@ say :: proc(a: Args, root: string) {
 	seconds := f64(len(result.audio)) / f64(result.sample_rate)
 	s := result.stats
 	ms :: proc(d: time.Duration) -> f64 {return time.duration_milliseconds(d)}
-	fmt.printfln("%s: %.2f s of audio, %d chunks, %d tokens, %d frames, voice %s, seed %d", a.out, seconds, s.chunks, s.tokens, s.frames, a.voice, a.options.seed)
+	fmt.printfln("%s: %.2f s of audio, %d chunks, %d tokens, %d frames, voice %s, seed %d", out, seconds, s.chunks, s.tokens, s.frames, voice.name, a.options.seed)
 	fmt.printfln("load %.0f ms; synthesis %.0f ms (%.2fx real time): text %.0f, prompt %.0f, backbone %.0f, flow %.0f, decode %.0f, align %.1f ms", ms(load), ms(wall), seconds / time.duration_seconds(wall), ms(s.text), ms(s.prompt), ms(s.backbone), ms(s.flow), ms(s.decode), ms(s.align))
 	fmt.printfln("samples sha256 %s", samples_hash(result.audio[:]))
 }

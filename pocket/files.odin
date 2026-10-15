@@ -132,3 +132,42 @@ destroy_safetensors :: proc(tensors: ^map[string]Safetensor) {
 	}
 	delete(tensors^)
 }
+
+Named_Safetensor :: struct {
+	name:   string,
+	tensor: Safetensor,
+}
+
+// Encodes `entries` in .safetensors format (8-byte little-endian header size,
+// JSON header with 0-based byte offsets into the body, then concatenated data).
+encode_safetensors :: proc(entries: []Named_Safetensor, allocator := context.allocator) -> []u8 {
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_byte(&b, '{')
+	offset := 0
+	for e, i in entries {
+		if i > 0 do strings.write_byte(&b, ',')
+		fmt.sbprintf(&b, "%q:{{\"dtype\":%q,\"shape\":[", e.name, e.tensor.dtype)
+		for d, k in e.tensor.shape {
+			if k > 0 do strings.write_byte(&b, ',')
+			fmt.sbprintf(&b, "%d", d)
+		}
+		next := offset + len(e.tensor.data)
+		fmt.sbprintf(&b, "],\"data_offsets\":[%d,%d]}}", offset, next)
+		offset = next
+	}
+	strings.write_byte(&b, '}')
+	// Pad header with spaces to 8-byte alignment, per safetensors spec.
+	for strings.builder_len(b) % 8 != 0 do strings.write_byte(&b, ' ')
+	header := strings.to_string(b)
+
+	out := make([]u8, 8 + len(header) + offset, allocator)
+	endian.unchecked_put_u64le(out[:8], u64(len(header)))
+	copy(out[8:], header)
+	pos := 8 + len(header)
+	for e in entries {
+		copy(out[pos:], e.tensor.data)
+		pos += len(e.tensor.data)
+	}
+	return out
+}
+

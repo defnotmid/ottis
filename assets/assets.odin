@@ -191,10 +191,16 @@ ensure_voice :: proc(root, name: string, verify := false, progress: Progress = n
 	return ensure(root, pin, verify, progress)
 }
 
-// Everything `say` needs for `voice`.
-fetch :: proc(root, voice: string, verify := false, progress: Progress = nil) -> (library: string, err: Error) {
+// Everything `say` needs for `voice` (when `voice` is a file path or empty,
+// only the runtime and bundle are fetched).
+fetch :: proc(root: string, voice := "", verify := false, progress: Progress = nil) -> (library: string, err: Error) {
 	library = ensure_runtime(root, verify, progress) or_return
 	ensure_bundle(root, verify, progress) or_return
-	ensure_voice(root, voice, verify, progress) or_return
+	if voice != "" {
+		if _, known := voice_pin(voice); known || !os.exists(voice) {
+			ensure_voice(root, voice, verify, progress) or_return
+		}
+	}
 	return library, nil
 }
+

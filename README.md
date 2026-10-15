@@ -11,6 +11,8 @@ word is spoken, which onimite's `captions{}` reads as is.
 odin build . -o:speed -out:build/ottis
 build/ottis say "The keeper climbed the spiral stairs." -o line.wav -words line.json
 build/ottis say -f script.txt -voice marius -seed 3 -o scene.wav -words scene.json
+build/ottis say "Hello there." -voice prompt.wav -o cloned.wav
+build/ottis clone prompt.wav -o voice.safetensors
 build/ottis voices
 ```
 
@@ -25,6 +27,13 @@ The binary needs nothing installed. On first use it downloads, into
 each checked against a pinned SHA-256 (`assets/pins.odin`). `ottis fetch`
 does this up front; `ottis fetch -verify` re-hashes everything. Downloads use
 the system libcurl on Linux and macOS and WinHTTP on Windows.
+
+**Voice cloning**: `-voice` also takes a recording (WAV, FLAC, MP3 or Ogg
+Vorbis; one speaker, 5 to 30 seconds of clean speech, cut at 30 s, trailing
+silence trimmed). Its Mimi encoding primes the model as a built-in voice's
+prompt does; `ottis clone` saves that state as a `.safetensors` file that
+`-voice` loads without encoding again. Clone only voices you may use: your
+own, or a speaker who agreed to it.
 
 **Word timings** come from forced alignment: each chunk's text is aligned
 to its generated audio by a CTC speech recognizer (20 ms frames), so cues
@@ -44,10 +53,14 @@ import "deps:ottis/assets"   // with -collection:deps=.. from a sibling project
 import "deps:ottis/pocket"
 
 root, _ := assets.data_dir()
-library, err := assets.fetch(root, "alba")          // runtime, bundle, aligner, voice
+library, err := assets.fetch(root, "alba")           // runtime, bundle, aligner, voice
 engine: pocket.Engine
-pocket.engine_init(&engine, root, library)           // once per process
-voice, _ := pocket.voice_load(&engine, root, "alba") // once per voice
+pocket.engine_init(&engine, root, library)            // once per process
+voice, _ := pocket.voice_load(&engine, root, "alba")  // named voice, .safetensors, or audio file
+// or clone from samples / file and optionally save the state:
+// voice, _ := pocket.voice_clone(&engine, samples, sample_rate, "custom")
+// voice, _ := pocket.voice_clone_file(&engine, "prompt.wav")
+// pocket.voice_save(&engine, &voice, "custom.safetensors")
 result: pocket.Result
 pocket.synthesize(&engine, &voice, "Hello there.", pocket.DEFAULT_OPTIONS, &result)
 // result.audio: mono f32 at result.sample_rate (24 kHz)

@@ -116,3 +116,69 @@ host_i64 :: proc(s: ^Host_State, i: int) -> i64 {
 	assert(s.types[i] == .Int64 && len(s.data[i]) >= 8)
 	return i64(endian.unchecked_get_u64le(s.data[i]))
 }
+
+// Copies ORT state values into a new Host_State matching `manifest`.
+host_state_from_values :: proc(rt: ^ort.Runtime, manifest: []State_Entry, values: []^ort.Value) -> (s: Host_State, err: Error) {
+	n := len(manifest)
+	s.types = make([]ort.Element_Type, n)
+	s.shapes = make([][]i64, n)
+	s.data = make([][]u8, n)
+	shape_buf: [8]i64
+	for e, i in manifest {
+		type, width, ok := element(e.dtype)
+		if !ok do return s, fmt.aprintf("state %s: unsupported dtype %s", e.input_name, e.dtype)
+		t := ort.view(rt, values[i], shape_buf[:]) or_return
+		if t.type != type do return s, fmt.aprintf("state %s: got %v, expected %v", e.input_name, t.type, type)
+		s.types[i] = type
+		s.shapes[i] = e.shape
+		bytes := t.count * width
+		s.data[i] = make([]u8, bytes)
+		if bytes > 0 && t.data != nil {
+			copy(s.data[i], ([^]u8)(t.data)[:bytes])
+		}
+	}
+	return s, nil
+}
+
+// Serializes a backbone voice state to .safetensors (slicing KV caches to
+// the voice prompt's `step` positions, matching upstream's exported voices).
+host_state_encode_safetensors :: proc(manifest: []State_Entry, s: ^Host_State, allocator := context.allocator) -> []u8 {
+	step: i64 = 0
+	for e, i in manifest {
+		if e.key == "step" && s.types[i] == .Int64 && len(s.data[i]) >= 8 {
+			step = host_i64(s, i)
+			break
+		}
+	}
+	entries := make([dynamic]Named_Safetensor, 0, len(manifest), context.temp_allocator)
+	for e, i in manifest {
+		switch e.key {
+		case "cache":
+			// [2, 1, 1000, 16, 64] -> slice dim 2 to `step`
+			if len(e.shape) != 5 || step <= 0 || step > e.shape[2] do continue
+			sliced_shape := make([]i64, 5, context.temp_allocator)
+			copy(sliced_shape, e.shape)
+			sliced_shape[2] = step
+			_, width, _ := element(e.dtype)
+			row_bytes := int(e.shape[3] * e.shape[4]) * width
+			full_stride := int(e.shape[2]) * row_bytes
+			sliced_stride := int(step) * row_bytes
+			outer := int(e.shape[0] * e.shape[1])
+			buf := make([]u8, outer * sliced_stride, context.temp_allocator)
+			for k in 0 ..< outer {
+				copy(buf[k * sliced_stride:][:sliced_stride], s.data[i][k * full_stride:][:sliced_stride])
+			}
+			append(&entries, Named_Safetensor{
+				name   = fmt.tprintf("%s/cache", e.module),
+				tensor = {dtype = "F32", shape = sliced_shape, data = buf},
+			})
+		case "step":
+			append(&entries, Named_Safetensor{
+				name   = fmt.tprintf("%s/offset", e.module),
+				tensor = {dtype = "I64", shape = e.shape, data = s.data[i]},
+			})
+		}
+	}
+	return encode_safetensors(entries[:], allocator)
+}
+
