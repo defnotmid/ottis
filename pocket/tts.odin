@@ -87,7 +87,8 @@ Engine :: struct {
 	main:        ort.Model,
 	flow:        ort.Model,
 	decoder:     ort.Model,
-	encoder:     ort.Model,
+	encoder:     ort.Model,  // loaded by the first voice_clone
+	root:        string,     // the bundle's folder, for the encoder
 	tok:         spm.Model,
 	bundle:      Bundle,
 	mimi:        Host_State, // decoder state at the start of a chunk
@@ -132,10 +133,7 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	e.main = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_main.onnx"), opts) or_return
 	e.flow = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_flow.onnx"), opts) or_return
 	e.decoder = ort.load_model(&e.rt, assets.path_in(root, dir + "mimi_decoder.onnx"), opts) or_return
-	e.encoder = ort.load_model(&e.rt, assets.path_in(root, dir + "mimi_encoder.onnx"), opts) or_return
-	if len(e.encoder.inputs) != 1 || len(e.encoder.outputs) != 1 {
-		return "mimi_encoder: expected one input and one output"
-	}
+	e.root = strings.clone(root)
 
 	tok_data := read(root, dir + "tokenizer.model") or_return
 	defer delete(tok_data)
@@ -226,6 +224,7 @@ engine_destroy :: proc(e: ^Engine) {
 	ort.unload_model(&e.flow)
 	ort.unload_model(&e.decoder)
 	ort.unload_model(&e.encoder)
+	delete(e.root)
 	align.destroy(&e.aligner)
 	spm.destroy(&e.tok)
 	host_state_destroy(&e.mimi)
@@ -319,6 +318,15 @@ voice_clone_file :: proc(e: ^Engine, path: string, name := "") -> (v: Voice, err
 // encodes through `mimi_encoder` and runs the backbone over the voice prompt.
 voice_clone :: proc(e: ^Engine, samples: []f32, sample_rate: int, name := "cloned") -> (v: Voice, err: Error) {
 	if len(samples) == 0 || sample_rate <= 0 do return v, "empty voice prompt"
+	if e.encoder.session == nil {
+		// Only cloning needs the encoder (40 MB): speaking never loads it.
+		path := assets.path_in(e.root, assets.BUNDLE_NAME + "/mimi_encoder.onnx")
+		e.encoder = ort.load_model(&e.rt, path, ort.Options{intra_threads = THREADS}) or_return
+		if len(e.encoder.inputs) != 1 || len(e.encoder.outputs) != 1 {
+			ort.unload_model(&e.encoder)
+			return v, "mimi_encoder: expected one input and one output"
+		}
+	}
 	src := samples
 	if max_samples := MAX_VOICE_SECONDS * sample_rate; len(src) > max_samples {
 		src = src[:max_samples]
