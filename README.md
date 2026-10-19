@@ -97,4 +97,7 @@ ottis should credit *Pocket TTS by Kyutai (CC-BY-4.0)*.
 The mascot, Ottis, is drawn by `tools/mascot` (`odin run tools/mascot --
 art`): `art/logo.svg` keeps its eyes, mouths (closed, "ah", "oo", "ee") and
 sound waves as layers a script can switch by id, so Ottis can lip-sync to
-ottis's own word cues.
+ottis's own word cues. Each colour is one traced path, and a hidden
+`silhouette` (the whole otter as one outline) gives onimite's
+`outline{ svg = "logo.svg", id = "silhouette" }` a shape to morph, extrude or
+collide.
