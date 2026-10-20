@@ -18,6 +18,19 @@ Kyutai's acceptable-use terms for Pocket TTS prohibit, among other things,
 voice impersonation or cloning without explicit and lawful consent, and
 presenting generated audio as genuine recordings of real people or events.
 
+## Built into ottis
+
+Audio files are decoded and WAVs written by
+[odecs](https://github.com/defnotmid/odecs) v0.0.9 (`deps:odecs/audio`,
+`deps:odecs/audio/wav`), and the mascot tool's PNGs by its image package. A
+program that ships ottis carries these licences:
+
+| Component | In ottis | Licence file |
+| --- | --- | --- |
+| odecs | audio decoding (WAV, FLAC, MP3, Ogg Vorbis and Opus, MP4/M4A, WebM), WAV writing | `LICENSES/odecs-MIT.txt` |
+| libopus | odecs' Opus decoder is a restructured port | `LICENSES/libopus-BSD-3-Clause.txt` |
+| Apple ALAC | odecs' ALAC decoder is a restructured port | `LICENSES/alac-Apache-2.0.txt` |
+
 ## Behaviour ported from other projects
 
 - **Pocket TTS** (github.com/kyutai-labs/pocket-tts, MIT, Kyutai): text

@@ -19,14 +19,14 @@
 // The mouths are speech shapes, so ottis's word cues can make Ottis talk.
 // Also writes the project logo as PNGs, scaled without smoothing:
 //
-//   odin run tools/mascot -- art   (art/logo.svg, logo.png 256 px, logo_32x32.png)
+//   odin run tools/mascot -collection:deps=.. -- art   (art/logo.svg, logo.png 256 px, logo_32x32.png)
 package mascot
 
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
-import stbi "vendor:stb/image"
+import odimg "deps:odecs/image"
 
 W :: 32
 H :: 32
@@ -343,7 +343,7 @@ png :: proc(path: string, layers: []Layer, scale: int) -> bool {
 			}
 		}
 	}
-	return stbi.write_png(strings.clone_to_cstring(path, context.temp_allocator), i32(size), i32(size), 4, raw_data(pixels), i32(size * 4)) != 0
+	return odimg.write_png(path, pixels, size, size) == .None
 }
 
 main :: proc() {

@@ -153,7 +153,7 @@ say :: proc(a: Args, root: string) {
 	if err := pocket.synthesize(&engine, &voice, text, a.options, &result); err != nil do fail("%s", err.?)
 	wall := time.tick_since(start)
 
-	if err := wav.write_pcm16(out, result.audio[:], result.sample_rate); err != nil do fail("writing %s: %v", out, err)
+	if err := wav.write_pcm16(out, result.audio[:], result.sample_rate); err != .None do fail("writing %s: %v", out, err)
 	if a.words != "" {
 		if err := os.write_entire_file(a.words, words_json(text, &result)); err != nil do fail("writing %s: %v", a.words, err)
 	}

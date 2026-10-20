@@ -306,7 +306,7 @@ voice_from_safetensors_bytes :: proc(e: ^Engine, data: []u8, name: string) -> (v
 	return v, nil
 }
 
-// Clones a voice from an audio file (WAV, FLAC, MP3, Ogg Vorbis).
+// Clones a voice from an audio file (WAV, FLAC, MP3, Ogg Vorbis or Opus, M4A, WebM).
 voice_clone_file :: proc(e: ^Engine, path: string, name := "") -> (v: Voice, err: Error) {
 	samples, rate := wav.read(path, context.temp_allocator) or_return
 	label := name if name != "" else filepath.stem(path)

@@ -8,7 +8,8 @@ through ONNX Runtime and writes a WAV plus a Whisper-style JSON of when each
 word is spoken, which onimite's `captions{}` reads as is.
 
 ```sh
-odin build . -o:speed -out:build/ottis
+git clone -b v0.0.9 https://github.com/defnotmid/odecs ../odecs   # next to ottis
+odin build . -o:speed -collection:deps=.. -out:build/ottis
 build/ottis say "The keeper climbed the spiral stairs." -o line.wav -words line.json
 build/ottis say -f script.txt -voice marius -seed 3 -o scene.wav -words scene.json
 build/ottis say "Hello there." -voice prompt.wav -o cloned.wav
@@ -28,12 +29,13 @@ each checked against a pinned SHA-256 (`assets/pins.odin`). `ottis fetch`
 does this up front; `ottis fetch -verify` re-hashes everything. Downloads use
 the system libcurl on Linux and macOS and WinHTTP on Windows.
 
-**Voice cloning**: `-voice` also takes a recording (WAV, FLAC, MP3 or Ogg
-Vorbis; one speaker, 5 to 30 seconds of clean speech, cut at 30 s, trailing
-silence trimmed). Its Mimi encoding primes the model as a built-in voice's
-prompt does; `ottis clone` saves that state as a `.safetensors` file that
-`-voice` loads without encoding again. Clone only voices you may use: your
-own, or a speaker who agreed to it.
+**Voice cloning**: `-voice` also takes a recording (WAV, FLAC, MP3, Ogg
+Vorbis or Opus, M4A, WebM; channels averaged to mono; one speaker, 5 to 30
+seconds of clean speech, cut at 30 s, trailing silence trimmed). Its Mimi
+encoding primes the model as a built-in voice's prompt does; `ottis clone`
+saves that state as a `.safetensors` file that `-voice` loads without
+encoding again. Clone only voices you may use: your own, or a speaker who
+agreed to it.
 
 **Word timings** come from forced alignment: each chunk's text is aligned
 to its generated audio by a CTC speech recognizer (20 ms frames), so cues
@@ -84,8 +86,11 @@ own team.
 Layout: `assets/` (pins, download, archive extraction), `ort/` (ONNX
 Runtime C API, loaded at run time), `spm/` (SentencePiece Unigram
 tokenizer), `pocket/` (chunking, generation), `align/` (resampling, CTC
-forced alignment), `wav/`,
-`main.odin` (CLI). `PLAN.md` holds the plan, including the native port.
+forced alignment), `wav/` (audio files to mono, WAV writing), `main.odin`
+(CLI). `PLAN.md` holds the plan, including the native port. Audio decoding
+and WAV writing are [odecs](https://github.com/defnotmid/odecs) v0.0.9's,
+the one dependency outside the Odin install: clone it next to ottis and
+build with `-collection:deps=..`.
 `tools/fetch_third_party.sh` clones the upstream Pocket TTS sources, at the
 pinned commit the port follows, into `third_party/` (gitignored, not needed
 to build).
@@ -94,10 +99,10 @@ ottis is MIT-licensed (`LICENSE`). Licences of what is downloaded, and of
 behaviour ported from elsewhere: `THIRD_PARTY_NOTICES.md`. Audio made with
 ottis should credit *Pocket TTS by Kyutai (CC-BY-4.0)*.
 
-The mascot, Ottis, is drawn by `tools/mascot` (`odin run tools/mascot --
-art`): `art/logo.svg` keeps its eyes, mouths (closed, "ah", "oo", "ee") and
-sound waves as layers a script can switch by id, so Ottis can lip-sync to
-ottis's own word cues. Each colour is one traced path, and a hidden
-`silhouette` (the whole otter as one outline) gives onimite's
-`outline{ svg = "logo.svg", id = "silhouette" }` a shape to morph, extrude or
-collide.
+The mascot, Ottis, is drawn by `tools/mascot` (`odin run tools/mascot
+-collection:deps=.. -- art`): `art/logo.svg` keeps its eyes, mouths
+(closed, "ah", "oo", "ee") and sound waves as layers a script can switch by
+id, so Ottis can lip-sync to ottis's own word cues. Each colour is one
+traced path, and a hidden `silhouette` (the whole otter as one outline)
+gives onimite's `outline{ svg = "logo.svg", id = "silhouette" }` a shape to
+morph, extrude or collide.
