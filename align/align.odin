@@ -73,8 +73,8 @@ Aligner :: struct {
 	logits: int, // output index
 }
 
-init :: proc(a: ^Aligner, rt: ^ort.Runtime, path: string, threads: int) -> ort.Error {
-	a.model = ort.load_model(rt, path, {intra_threads = threads}) or_return
+init :: proc(a: ^Aligner, rt: ^ort.Runtime, path: string) -> ort.Error {
+	a.model = ort.load_model(rt, path) or_return
 	if len(a.model.inputs) != 1 || string(a.model.inputs[0]) != "input_values" do return "aligner: expected one input, input_values"
 	a.logits = ort.output_index(&a.model, "logits")
 	if a.logits < 0 do return "aligner: no logits output"

@@ -7,6 +7,10 @@
 // Values are ORT's own: a session's outputs are allocated by ORT and can be
 // fed straight back as the next run's inputs (the model's state), and
 // inputs made from caller memory borrow it without copying.
+//
+// ORT starts no threads: every session runs its graph on the thread that
+// calls run (one intra-op and one inter-op thread, which ORT counts as the
+// caller's own). Parallelism is the caller's, across runs.
 package ort
 
 import "core:c"
@@ -193,11 +197,7 @@ Model :: struct {
 	outputs: []cstring,
 }
 
-Options :: struct {
-	intra_threads: int,
-}
-
-load_model :: proc(rt: ^Runtime, path: string, options: Options) -> (m: Model, err: Error) {
+load_model :: proc(rt: ^Runtime, path: string) -> (m: Model, err: Error) {
 	m.rt = rt
 	so: ^Session_Options
 	check(rt, rt.create_options(&so), "session options") or_return
@@ -206,7 +206,7 @@ load_model :: proc(rt: ^Runtime, path: string, options: Options) -> (m: Model, e
 	ENABLE_ALL :: 99
 	check(rt, rt.set_exec_mode(so, SEQUENTIAL), "execution mode") or_return
 	check(rt, rt.set_opt_level(so, ENABLE_ALL), "optimization level") or_return
-	check(rt, rt.set_intra(so, c.int(max(options.intra_threads, 1))), "intra-op threads") or_return
+	check(rt, rt.set_intra(so, 1), "intra-op threads") or_return
 	check(rt, rt.set_inter(so, 1), "inter-op threads") or_return
 
 	// ORT takes paths as ORTCHAR_T: UTF-16 on Windows, UTF-8 elsewhere.

@@ -6,12 +6,15 @@
 // audio (`align`).
 package pocket
 
+import "base:runtime"
 import "core:fmt"
 import "core:math"
+import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:time"
+import "deps:odecs/common"
 import "../align"
 import "../assets"
 import "../ort"
@@ -25,18 +28,11 @@ GEN_SECONDS_PADDING :: 2.0
 DECODE_FRAMES :: 12
 MAX_VOICE_SECONDS :: 30
 
-// ONNX Runtime intra-op threads per graph, fixed: the runtime partitions
-// some operators by thread count, so 8 or more threads give different
-// samples for the same seed (1 to 6 agree). A seed reproduces its audio
-// because this is not taken from the machine; more throughput comes from
-// synthesizing separate texts at once.
-THREADS :: 4
-
 // The version of what `synthesize` returns for given inputs (samples,
 // words, chunks). Bumped by any change to generation, chunking or
 // alignment that changes the output, so a store keyed on it (with the
 // pins in `assets`, the text, voice and options) never serves a stale line.
-VERSION :: 1
+VERSION :: 2
 
 Options :: struct {
 	temperature:      f32, // variance of the flow head's noise; upstream's default for this model is 0.3
@@ -72,6 +68,7 @@ Result :: struct {
 	words:       [dynamic]Word, // every source word, in order
 	chunks:      [dynamic]Chunk_Info,
 	stats:       Stats,
+	err:         Error, // the line's failure, from synthesize_batch
 }
 
 result_destroy :: proc(r: ^Result) {
@@ -125,14 +122,16 @@ need :: proc(index: int, what: string) -> Error {
 // Loads the bundle under `root` (as `assets.fetch` leaves it). After init
 // the engine is read-only: `synthesize` may run on several threads at once
 // (ONNX Runtime sessions allow concurrent runs), each with its own Result.
+// ottis starts no threads and the runtime runs no graph on its own (its
+// environment keeps one idle thread): every graph runs on the thread that
+// calls, and `synthesize_batch` spreads lines over the caller's pool.
 engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	if err := ort.init(&e.rt, library); err != nil do return err
 	dir :: assets.BUNDLE_NAME + "/"
-	opts := ort.Options{intra_threads = THREADS}
-	e.text = ort.load_model(&e.rt, assets.path_in(root, dir + "text_conditioner.onnx"), opts) or_return
-	e.main = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_main.onnx"), opts) or_return
-	e.flow = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_flow.onnx"), opts) or_return
-	e.decoder = ort.load_model(&e.rt, assets.path_in(root, dir + "mimi_decoder.onnx"), opts) or_return
+	e.text = ort.load_model(&e.rt, assets.path_in(root, dir + "text_conditioner.onnx")) or_return
+	e.main = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_main.onnx")) or_return
+	e.flow = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_flow.onnx")) or_return
+	e.decoder = ort.load_model(&e.rt, assets.path_in(root, dir + "mimi_decoder.onnx")) or_return
 	e.root = strings.clone(root)
 
 	tok_data := read(root, dir + "tokenizer.model") or_return
@@ -214,7 +213,7 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	need(e.flow_x, "x") or_return
 	if len(e.flow.outputs) != 1 do return "flow head has more than one output"
 
-	align.init(&e.aligner, &e.rt, assets.path_in(root, assets.ALIGNER.path), THREADS) or_return
+	align.init(&e.aligner, &e.rt, assets.path_in(root, assets.ALIGNER.path)) or_return
 	return nil
 }
 
@@ -321,7 +320,7 @@ voice_clone :: proc(e: ^Engine, samples: []f32, sample_rate: int, name := "clone
 	if e.encoder.session == nil {
 		// Only cloning needs the encoder (40 MB): speaking never loads it.
 		path := assets.path_in(e.root, assets.BUNDLE_NAME + "/mimi_encoder.onnx")
-		e.encoder = ort.load_model(&e.rt, path, ort.Options{intra_threads = THREADS}) or_return
+		e.encoder = ort.load_model(&e.rt, path) or_return
 		if len(e.encoder.inputs) != 1 || len(e.encoder.outputs) != 1 {
 			ort.unload_model(&e.encoder)
 			return v, "mimi_encoder: expected one input and one output"
@@ -460,6 +459,44 @@ synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, re
 		word = next
 	}
 	return nil
+}
+
+// One line of a batch.
+Job :: struct {
+	voice:   ^Voice,
+	text:    string,
+	options: Options,
+}
+
+// Speaks each job into the result at its index, the lines spread over the
+// caller's pool (nil: in order on the calling thread). A line runs whole on
+// one thread, so its samples are the ones `synthesize` gives, at any pool
+// size. A failed line leaves its error in
+// its result's `err`, and the others still complete. Audio, words, chunks
+// and errors come from `allocator`, which must be thread-safe when the pool
+// runs ranges at once; words borrow their job's text. A line's scratch is
+// the running thread's temp allocator, rewound after the line when it is
+// Odin's default one.
+synthesize_batch :: proc(e: ^Engine, pool: ^common.Work_Pool, jobs: []Job, results: []Result, allocator := context.allocator) {
+	assert(len(results) == len(jobs))
+	Batch :: struct {
+		e:         ^Engine,
+		jobs:      []Job,
+		results:   []Result,
+		allocator: mem.Allocator,
+	}
+	lines :: proc(data: rawptr, first, end: int) {
+		b := (^Batch)(data)
+		context.allocator = b.allocator
+		for i in first ..< end {
+			runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+			j := &b.jobs[i]
+			b.results[i].err = synthesize(b.e, j.voice, j.text, j.options, &b.results[i])
+		}
+	}
+	b := Batch{e, jobs, results, allocator}
+	if pool == nil do lines(&b, 0, len(jobs))
+	else do pool.run(pool, len(jobs), lines, &b)
 }
 
 @(private)

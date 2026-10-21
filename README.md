@@ -45,8 +45,9 @@ and are marked `"estimated": true`.
 
 **Determinism**: the only randomness is the flow head's noise, drawn from
 ottis's own seeded generator; the same text, voice and `-seed` give the same
-samples on a given CPU (`say` prints their SHA-256). ONNX Runtime's thread
-count changes results, so ottis fixes it (`pocket.THREADS`).
+samples on a given CPU (`say` prints their SHA-256). Every graph runs on
+one thread, so neither the machine's core count nor a caller's pool changes
+them.
 
 ## As a library
 
@@ -68,14 +69,24 @@ pocket.synthesize(&engine, &voice, "Hello there.", pocket.DEFAULT_OPTIONS, &resu
 // result.audio: mono f32 at result.sample_rate (24 kHz)
 // result.words: { text, index, start, end, estimated } for every source word
 // result.chunks: generated chunks with their spans and word ranges
+
+// several lines over the caller's pool (odecs' common.Work_Pool; nil runs
+// them in order on this thread), each line's failure in its result's err:
+jobs := []pocket.Job{{&voice, "Hello there.", pocket.DEFAULT_OPTIONS}, {&voice, "Goodbye.", pocket.DEFAULT_OPTIONS}}
+results := make([]pocket.Result, len(jobs))
+pocket.synthesize_batch(&engine, pool, jobs, results)
 ```
 
-After `engine_init` the engine is read-only: `synthesize` can run on several
-threads at once with their own `Result`s, and gives the same samples as when
-run alone. Each call uses `pocket.THREADS` (4) runtime threads per graph.
-`pocket.VERSION` changes whenever the output for the same inputs does: a
-store of synthesized lines keys on it, the pins in `assets`, the text, the
-voice and the options.
+ottis starts no threads, and ONNX Runtime runs no graph on threads of its
+own: each runs on the thread that calls (the runtime's environment keeps
+one idle thread). After `engine_init` the engine is read-only:
+`synthesize` can run on several threads at once with their own `Result`s,
+and gives the same samples as when run alone. `synthesize_batch` spreads
+whole lines over the pool, so a batch takes as many cores, and as much
+memory (about 150 to 190 MB per line in flight on Linux x64), as the pool
+runs tasks at once. `pocket.VERSION` changes whenever the output for the
+same inputs does: a store of synthesized lines keys on it, the pins in
+`assets`, the text, the voice and the options.
 
 On macOS, an app signed with the hardened runtime (as notarization
 requires) needs the `com.apple.security.cs.disable-library-validation`
