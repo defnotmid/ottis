@@ -38,6 +38,9 @@ program that ships ottis carries these licences:
   lengths, and the decoder fade-in (`pocket/text.odin`, `pocket/tts.odin`).
   Its licence, from kyutai-labs/pocket-tts at b94db17:
   `LICENSES/pocket-tts-MIT.txt`.
+- **ITU-R BS.1770-4 loudness** (`pocket/loudness.odin`): ported from
+  odawg's meter (MIT, the same author), whose K-weighting at rates other
+  than 48 kHz uses libebur128's analog prototype constants (MIT).
 - **torchaudio's CTC forced alignment** (BSD-2-Clause): the Viterbi
   formulation `align/align.odin` follows (reimplemented).
 - **SentencePiece** (github.com/google/sentencepiece, Apache-2.0): the Unigram

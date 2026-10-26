@@ -43,6 +43,15 @@ land where the word is actually spoken. Words it cannot spell, such as numbers
 ("$3.50" said as "three fifty"), share the span between their neighbours
 and are marked `"estimated": true`.
 
+**Loudness**: every line comes out at -23 LUFS integrated (EBU R128,
+measured as the mono file it is; it reads -20 on both channels of a stereo
+mix), whatever the voice. The shipped voices speak at -35 to -19 LUFS of
+their own; each line is scaled by one gain to the target. Speech peaks 12 to
+23 dB over its loudness, so where the gain would put the true peak over
+-1 dBTP it stops there, and that line lands under -23 by the difference.
+Word timings are taken before the gain and do not change. A louder master is
+the mix's: a limiter after the voices, as onimite's master has.
+
 **Determinism**: the only randomness is the flow head's noise, drawn from
 ottis's own seeded generator; the same text, voice and `-seed` give the same
 samples on a given CPU (`say` prints their SHA-256). Every graph runs on
@@ -66,7 +75,7 @@ voice, _ := pocket.voice_load(&engine, root, "alba")  // named voice, .safetenso
 // pocket.voice_save(&engine, &voice, "custom.safetensors")
 result: pocket.Result
 pocket.synthesize(&engine, &voice, "Hello there.", pocket.DEFAULT_OPTIONS, &result)
-// result.audio: mono f32 at result.sample_rate (24 kHz)
+// result.audio: mono f32 at result.sample_rate (24 kHz), at -23 LUFS
 // result.words: { text, index, start, end, estimated } for every source word
 // result.chunks: generated chunks with their spans and word ranges
 
@@ -96,7 +105,7 @@ own team.
 
 Layout: `assets/` (pins, download, archive extraction), `ort/` (ONNX
 Runtime C API, loaded at run time), `spm/` (SentencePiece Unigram
-tokenizer), `pocket/` (chunking, generation), `align/` (resampling, CTC
+tokenizer), `pocket/` (chunking, generation, loudness), `align/` (resampling, CTC
 forced alignment), `wav/` (audio files to mono, WAV writing), `main.odin`
 (CLI). `PLAN.md` holds the plan, including the native port. Audio decoding
 and WAV writing are [odecs](https://github.com/defnotmid/odecs) v0.0.9's,

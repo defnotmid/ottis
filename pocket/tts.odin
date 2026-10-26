@@ -29,10 +29,10 @@ DECODE_FRAMES :: 12
 MAX_VOICE_SECONDS :: 30
 
 // The version of what `synthesize` returns for given inputs (samples,
-// words, chunks). Bumped by any change to generation, chunking or
+// words, chunks). Bumped by any change to generation, chunking, loudness or
 // alignment that changes the output, so a store keyed on it (with the
 // pins in `assets`, the text, voice and options) never serves a stale line.
-VERSION :: 2
+VERSION :: 3
 
 Options :: struct {
 	temperature:      f32, // variance of the flow head's noise; upstream's default for this model is 0.3
@@ -63,7 +63,7 @@ Chunk_Info :: struct {
 }
 
 Result :: struct {
-	audio:       [dynamic]f32, // mono, `sample_rate`
+	audio:       [dynamic]f32, // mono, `sample_rate`, at LOUDNESS_TARGET
 	sample_rate: int,
 	words:       [dynamic]Word, // every source word, in order
 	chunks:      [dynamic]Chunk_Info,
@@ -442,7 +442,8 @@ voice_destroy :: proc(v: ^Voice) {
 	host_state_destroy(&v.state)
 }
 
-// Speaks `text` in `voice` into `result` (audio, word timings, chunks).
+// Speaks `text` in `voice` into `result` (audio, word timings, chunks),
+// the line scaled to LOUDNESS_TARGET whatever the voice (loudness.odin).
 // Deterministic: the same text, voice and options give the same samples.
 synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, result: ^Result) -> Error {
 	result.sample_rate = e.bundle.sample_rate
@@ -451,6 +452,7 @@ synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, re
 	source_words := word_spans(text)
 	rng := rng_init(options.seed)
 	word := 0
+	line_start := len(result.audio)
 	for chunk in chunks {
 		start := f64(len(result.audio)) / f64(result.sample_rate)
 		next := synthesize_chunk(e, voice, text, source_words[:], chunk, word, options, &rng, result) or_return
@@ -458,6 +460,7 @@ synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, re
 		append(&result.chunks, Chunk_Info{strings.clone(chunk), start, end, word, next - word})
 		word = next
 	}
+	normalize_loudness(result.audio[line_start:], result.sample_rate)
 	return nil
 }
 
