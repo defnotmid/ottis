@@ -120,7 +120,7 @@ video { width = W, height = H, fps = 60, duration = DURATION, background = BG,
   -- the lines on the voice bus (a say line's own), the score under them,
   -- ducked on every line
   buses = { voice = {}, music = { gain_db = 4 } },
-  master_gain_db = 3.5,   -- the voices sit near -17.5 LUFS: lifted to about -14
+  master_gain_db = 6.5,   -- ottis says every line at -23 LUFS: lifted to about -14.5
   audio = (function()
     local tracks = { { "score", bus = "music", ducked = true, fade_out = 1.5 } }
     for _, l in ipairs(LINES) do tracks[#tracks + 1] = { l[1], start = l.at } end
