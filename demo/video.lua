@@ -119,7 +119,7 @@ end
 video { width = W, height = H, fps = 60, duration = DURATION, background = BG,
   -- the lines on the voice bus (a say line's own), the score under them,
   -- ducked on every line
-  buses = { voice = {}, music = { gain_db = 4 } },
+  buses = { voice = {}, music = { gain_db = 1.6 } },  -- the score 10 LU under the voices
   master_gain_db = 6.5,   -- ottis says every line at -23 LUFS: lifted to about -14.5
   audio = (function()
     local tracks = { { "score", bus = "music", ducked = true, fade_out = 1.5 } }

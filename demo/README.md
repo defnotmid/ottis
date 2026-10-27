@@ -45,7 +45,7 @@ everything after it, the score's end included.
   every recorded sound is fetched on first use.
 
 Mix (`onimite audio analyze demo/video.lua`): -14.6 LUFS integrated, -2.0 dBTP; the voices
-at -14.0 LUFS (ottis says every line at -23, the master lifts them), the score 7.6 LU under
+at -14.0 LUFS (ottis says every line at -23, the master lifts them), the score 10 LU under
 them (12 dB more while a line is said).
 
 ## Credits

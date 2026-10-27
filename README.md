@@ -126,3 +126,7 @@ id, so Ottis can lip-sync to ottis's own word cues. Each colour is one
 traced path, and a hidden `silhouette` (the whole otter as one outline)
 gives onimite's `outline{ svg = "logo.svg", id = "silhouette" }` a shape to
 morph, extrude or collide.
+
+`demo/` is a 28 second showcase made with onimite: Ottis says what ottis
+does in four voices, and lip-syncs to the word times ottis returns, over a
+score by odawg (`onimite render demo/video.lua`; see `demo/README.md`).
