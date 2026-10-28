@@ -81,6 +81,7 @@ voices_speak_at_one_loudness :: proc(t: ^testing.T) {
 	}
 	library, ferr := assets.fetch(root)
 	if !testing.expectf(t, ferr == nil, "fetch: %v", ferr) do return
+	defer delete(library)
 
 	e: Engine
 	if err := engine_init(&e, root, library); !testing.expectf(t, err == nil, "engine_init: %v", err) do return

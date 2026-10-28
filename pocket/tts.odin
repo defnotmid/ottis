@@ -228,6 +228,7 @@ engine_destroy :: proc(e: ^Engine) {
 	align.destroy(&e.aligner)
 	spm.destroy(&e.tok)
 	host_state_destroy(&e.mimi)
+	bundle_destroy(&e.bundle)
 	delete(e.bos_voice)
 	delete(e.main_in)
 	delete(e.main_out)

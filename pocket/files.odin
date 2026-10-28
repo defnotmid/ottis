@@ -36,14 +36,39 @@ Bundle :: struct {
 	mimi_state_manifest:       []State_Entry,
 }
 
-parse_bundle :: proc(data: []u8, allocator := context.allocator) -> (b: Bundle, err: Error) {
-	if jerr := json.unmarshal(data, &b, allocator = allocator); jerr != nil {
-		return b, fmt.aprintf("bundle.json: %v", jerr)
+// bundle.json, its strings and manifests from `allocator`. On an error
+// nothing is returned.
+parse_bundle :: proc(data: []u8, allocator := context.allocator) -> (Bundle, Error) {
+	context.allocator = allocator
+	b: Bundle
+	err: Error
+	if jerr := json.unmarshal(data, &b); jerr != nil {
+		err = fmt.aprintf("bundle.json: %v", jerr)
+	} else if b.sample_rate <= 0 || b.samples_per_frame <= 0 || b.latent_dim <= 0 || b.conditioning_dim <= 0 {
+		err = "bundle.json: missing dimensions"
 	}
-	if b.sample_rate <= 0 || b.samples_per_frame <= 0 || b.latent_dim <= 0 || b.conditioning_dim <= 0 {
-		return b, "bundle.json: missing dimensions"
+	if err != nil {
+		bundle_destroy(&b)
+		return {}, err
 	}
 	return b, nil
+}
+
+bundle_destroy :: proc(b: ^Bundle) {
+	delete(b.bundle_name)
+	for manifest in ([][]State_Entry{b.flow_lm_state_manifest, b.mimi_state_manifest}) {
+		for e in manifest {
+			delete(e.input_name)
+			delete(e.output_name)
+			delete(e.module)
+			delete(e.key)
+			delete(e.dtype)
+			delete(e.fill)
+			delete(e.shape)
+		}
+		delete(manifest)
+	}
+	b^ = {}
 }
 
 // A float32 .npy array (C order). On an error nothing is returned.
