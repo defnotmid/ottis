@@ -9,19 +9,30 @@ import "core:strings"
 
 // The named members of a release archive (.tgz, or .zip when `is_zip`),
 // matched by their path below the archive's top directory. Every member
-// must be found as a regular file.
-extract :: proc(archive: []u8, members: []string, is_zip: bool) -> (files: [][]u8, err: Error) {
-	files = make([][]u8, len(members))
-	if is_zip {
-		extract_zip(archive, members, files) or_return
-	} else {
-		buf: bytes.Buffer
-		defer bytes.buffer_destroy(&buf)
-		if gerr := gzip.load_from_bytes(archive, &buf); gerr != nil do return files, fmt.aprintf("gzip: %v", gerr)
-		extract_tar(bytes.buffer_to_bytes(&buf), members, files) or_return
+// must be found as a regular file. On an error nothing is returned.
+extract :: proc(archive: []u8, members: []string, is_zip: bool) -> ([][]u8, Error) {
+	files := make([][]u8, len(members))
+	err := extract_zip(archive, members, files) if is_zip else extract_tgz(archive, members, files)
+	if err == nil {
+		for f, i in files do if f == nil {
+			err = fmt.aprintf("archive has no %s", members[i])
+			break
+		}
 	}
-	for f, i in files do if f == nil do return files, fmt.aprintf("archive has no %s", members[i])
+	if err != nil {
+		for f in files do delete(f)
+		delete(files)
+		return nil, err
+	}
 	return files, nil
+}
+
+@(private)
+extract_tgz :: proc(archive: []u8, members: []string, files: [][]u8) -> Error {
+	buf: bytes.Buffer
+	defer bytes.buffer_destroy(&buf)
+	if gerr := gzip.load_from_bytes(archive, &buf); gerr != nil do return fmt.aprintf("gzip: %v", gerr)
+	return extract_tar(bytes.buffer_to_bytes(&buf), members, files)
 }
 
 // "./onnxruntime-x/lib/a.so" -> "lib/a.so"
@@ -125,17 +136,19 @@ extract_zip :: proc(zip: []u8, members: []string, files: [][]u8) -> Error {
 		extra_len := int(endian.unchecked_get_u16le(zip[pos + 30:]))
 		comment_len := int(endian.unchecked_get_u16le(zip[pos + 32:]))
 		local := int(endian.unchecked_get_u32le(zip[pos + 42:]))
+		if name_len + extra_len + comment_len > len(zip) - pos - 46 do return fmt.aprintf("zip: bad central entry at %d", pos)
 		name := string(zip[pos + 46:][:name_len])
 		pos += 46 + name_len + extra_len + comment_len
 
 		i := match(name, members)
 		if i < 0 || files[i] != nil do continue
-		if local + 30 > len(zip) || endian.unchecked_get_u32le(zip[local:]) != 0x04034b50 do return fmt.aprintf("zip: bad local header for %s", name)
+		if local > len(zip) - 30 || endian.unchecked_get_u32le(zip[local:]) != 0x04034b50 do return fmt.aprintf("zip: bad local header for %s", name)
 		start := local + 30 + int(endian.unchecked_get_u16le(zip[local + 26:])) + int(endian.unchecked_get_u16le(zip[local + 28:]))
 		if start + packed > len(zip) do return fmt.aprintf("zip: %s is truncated", name)
 		data := zip[start:][:packed]
 		switch method {
 		case 0:
+			if packed != size do return fmt.aprintf("zip: stored %s is %d bytes, expected %d", name, packed, size)
 			files[i] = make([]u8, size)
 			copy(files[i], data)
 		case 8:

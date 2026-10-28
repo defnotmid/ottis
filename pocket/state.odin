@@ -6,6 +6,10 @@ import "core:math"
 import "core:mem"
 import "../ort"
 
+// Saved tensors (.safetensors, .npy) are little-endian, and their bytes go
+// into the graphs' tensors as they are.
+#assert(ODIN_ENDIAN == .Little)
+
 // A graph's recurrent state in host memory: the start of every chunk.
 // Runs borrow it through ORT values and get their next state back as
 // ORT-allocated outputs, so it is never written after it is built.
@@ -29,14 +33,25 @@ element :: proc(dtype: string) -> (ort.Element_Type, int, bool) {
 // "zeros", "empty"), then overlaid with a saved voice's tensors where it
 // has them (`module/key`; a KV cache shorter than the graph's is copied
 // into its leading positions, and `step` comes from the saved `offset`).
-host_state_init :: proc(manifest: []State_Entry, voice: ^map[string]Safetensor = nil) -> (s: Host_State, err: Error) {
+// On an error nothing is returned.
+host_state_init :: proc(manifest: []State_Entry, voice: ^map[string]Safetensor = nil) -> (Host_State, Error) {
+	s: Host_State
+	if err := build_state(&s, manifest, voice); err != nil {
+		host_state_destroy(&s)
+		return {}, err
+	}
+	return s, nil
+}
+
+@(private)
+build_state :: proc(s: ^Host_State, manifest: []State_Entry, voice: ^map[string]Safetensor) -> Error {
 	n := len(manifest)
 	s.types = make([]ort.Element_Type, n)
 	s.shapes = make([][]i64, n)
 	s.data = make([][]u8, n)
 	for e, i in manifest {
 		type, width, ok := element(e.dtype)
-		if !ok do return s, fmt.aprintf("state %s: unsupported dtype %s", e.input_name, e.dtype)
+		if !ok do return fmt.aprintf("state %s: unsupported dtype %s", e.input_name, e.dtype)
 		count := 1
 		for d in e.shape do count *= int(d)
 		s.types[i] = type
@@ -53,7 +68,7 @@ host_state_init :: proc(manifest: []State_Entry, voice: ^map[string]Safetensor =
 		if !found do continue
 		overlay(s.data[i], type, e.shape, src) or_return
 	}
-	return s, nil
+	return nil
 }
 
 host_state_destroy :: proc(s: ^Host_State) {
@@ -92,7 +107,12 @@ overlay :: proc(dst: []u8, type: ort.Element_Type, dst_shape: []i64, src: Safete
 		return nil
 	}
 	if len(src.shape) != len(dst_shape) do return fmt.aprintf("voice tensor rank %d does not match state rank %d", len(src.shape), len(dst_shape))
-	for d, i in src.shape do if d > dst_shape[i] do return "voice tensor is larger than the state"
+	count := 1
+	for d, i in src.shape {
+		if d < 0 || d > dst_shape[i] do return "voice tensor is larger than the state"
+		count *= int(d)
+	}
+	if count * width != len(src.data) do return "voice tensor's data does not match its shape"
 	copy_block(dst, dst_shape, src.data, src.shape, width)
 	return nil
 }

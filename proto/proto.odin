@@ -20,8 +20,9 @@ Field :: struct {
 }
 
 Reader :: struct {
-	data: []u8,
-	pos:  int,
+	data:      []u8,
+	pos:       int,
+	malformed: bool, // next stopped on bad input, wherever pos is
 }
 
 read_varint :: proc(r: ^Reader) -> (value: u64, ok: bool) {
@@ -37,9 +38,10 @@ read_varint :: proc(r: ^Reader) -> (value: u64, ok: bool) {
 }
 
 // The next field, or ok = false at the end of the message or on malformed
-// input (`r.pos < len(r.data)` tells the two apart).
+// input (`finished` tells the two apart).
 next :: proc(r: ^Reader) -> (f: Field, ok: bool) {
 	if r.pos >= len(r.data) do return {}, false
+	defer if !ok do r.malformed = true
 	f.start = r.pos
 	tag := read_varint(r) or_return
 	f.number = u32(tag >> 3)
@@ -67,9 +69,10 @@ next :: proc(r: ^Reader) -> (f: Field, ok: bool) {
 	return f, true
 }
 
-// Whether a reader stopped at the end of its message rather than on bad input.
+// Whether a reader stopped at the end of its message rather than on bad
+// input (a value cut off by the end of the message is bad input).
 finished :: proc(r: Reader) -> bool {
-	return r.pos == len(r.data)
+	return !r.malformed && r.pos == len(r.data)
 }
 
 as_f32 :: proc(f: Field) -> f32 {

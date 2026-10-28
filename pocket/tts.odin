@@ -29,10 +29,11 @@ DECODE_FRAMES :: 12
 MAX_VOICE_SECONDS :: 30
 
 // The version of what `synthesize` returns for given inputs (samples,
-// words, chunks). Bumped by any change to generation, chunking, loudness or
-// alignment that changes the output, so a store keyed on it (with the
-// pins in `assets`, the text, voice and options) never serves a stale line.
-VERSION :: 3
+// words, chunks). Bumped by any change to tokenizing, chunking,
+// generation, loudness or alignment that changes the output, so a store
+// keyed on it (with the pins in `assets`, the text, voice and options)
+// never serves a stale line.
+VERSION :: 4
 
 Options :: struct {
 	temperature:      f32, // variance of the flow head's noise; upstream's default for this model is 0.3
@@ -300,8 +301,8 @@ voice_load_safetensors :: proc(e: ^Engine, path: string, name := "") -> (v: Voic
 voice_from_safetensors_bytes :: proc(e: ^Engine, data: []u8, name: string) -> (v: Voice, err: Error) {
 	tensors := parse_safetensors(data) or_return
 	defer destroy_safetensors(&tensors)
-	v.name = strings.clone(name)
 	v.state = host_state_init(e.bundle.flow_lm_state_manifest, &tensors) or_return
+	v.name = strings.clone(name)
 	return v, nil
 }
 

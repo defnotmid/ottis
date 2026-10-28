@@ -1,8 +1,8 @@
 // SentencePiece Unigram encoding, for the models Pocket TTS ships: identity
 // normalizer, a dummy-prefix "▁", spaces escaped as "▁", byte fallback for
-// characters no piece covers. The model file is read straight from its
-// protobuf; anything outside that shape is refused at load instead of
-// encoded differently.
+// characters no piece covers, U+FFFD for each byte outside valid UTF-8.
+// The model file is read straight from its protobuf; anything outside that
+// shape is refused at load instead of encoded differently.
 package spm
 
 import "core:strings"
@@ -46,21 +46,40 @@ Token :: struct {
 
 UNK_PENALTY :: 10.0
 
-load :: proc(data: []u8, allocator := context.allocator) -> (m: Model, err: string) {
+// Reads a tokenizer.model. On an error nothing is kept: the model it
+// returns is empty.
+load :: proc(data: []u8, allocator := context.allocator) -> (Model, string) {
 	context.allocator = allocator
+	m: Model
+	if err := read(&m, data); err != "" {
+		destroy(&m)
+		return {}, err
+	}
+	return m, ""
+}
+
+// Fills `m` from a model file. What it allocates is `m`'s, whether or not
+// it finishes, so `destroy` frees it either way.
+@(private)
+read :: proc(m: ^Model, data: []u8) -> string {
 	m.backing = make([]u8, len(data))
 	copy(m.backing, data)
 
 	pieces: [dynamic]string
 	scores: [dynamic]f32
 	types: [dynamic]Piece_Type
+	defer {
+		m.pieces = pieces[:]
+		m.scores = scores[:]
+		m.types = types[:]
+	}
+	unk_id: u64 = 0
 	model_type: u64 = 1
 	normalizer := "nmt_nfkc"
 	charsmap_bytes := 0
 	m.add_dummy_prefix = true
 	escape_whitespaces := true
 	remove_extra_whitespaces := true
-	m.unk_id = 0
 
 	r := proto.Reader{data = m.backing}
 	for f in proto.next(&r) {
@@ -74,9 +93,12 @@ load :: proc(data: []u8, allocator := context.allocator) -> (m: Model, err: stri
 				switch pf.number {
 				case 1: piece = string(pf.bytes)
 				case 2: score = proto.as_f32(pf)
-				case 3: type = Piece_Type(pf.value)
+				case 3:
+					if pf.value < u64(Piece_Type.Normal) || pf.value > u64(Piece_Type.Byte) do return "tokenizer: unknown piece type"
+					type = Piece_Type(pf.value)
 				}
 			}
+			if !proto.finished(pr) do return "tokenizer: malformed piece"
 			append(&pieces, piece)
 			append(&scores, score)
 			append(&types, type)
@@ -86,9 +108,10 @@ load :: proc(data: []u8, allocator := context.allocator) -> (m: Model, err: stri
 				switch tf.number {
 				case 3: model_type = tf.value
 				case 35: m.byte_fallback = tf.value != 0
-				case 40: m.unk_id = i32(tf.value)
+				case 40: unk_id = tf.value
 				}
 			}
+			if !proto.finished(tr) do return "tokenizer: malformed trainer spec"
 		case 3: // NormalizerSpec
 			nr := proto.Reader{data = f.bytes}
 			for nf in proto.next(&nr) {
@@ -100,25 +123,25 @@ load :: proc(data: []u8, allocator := context.allocator) -> (m: Model, err: stri
 				case 5: escape_whitespaces = nf.value != 0
 				}
 			}
+			if !proto.finished(nr) do return "tokenizer: malformed normalizer spec"
 		}
 	}
-	if !proto.finished(r) do return m, "tokenizer: malformed protobuf"
-	if model_type != 1 do return m, "tokenizer: not a Unigram model"
-	if normalizer != "identity" || charsmap_bytes != 0 do return m, "tokenizer: only the identity normalizer is supported"
-	if remove_extra_whitespaces || !escape_whitespaces do return m, "tokenizer: unsupported whitespace handling"
-	if len(pieces) == 0 do return m, "tokenizer: no pieces"
+	if !proto.finished(r) do return "tokenizer: malformed protobuf"
+	if model_type != 1 do return "tokenizer: not a Unigram model"
+	if normalizer != "identity" || charsmap_bytes != 0 do return "tokenizer: only the identity normalizer is supported"
+	if remove_extra_whitespaces || !escape_whitespaces do return "tokenizer: unsupported whitespace handling"
+	if len(pieces) == 0 do return "tokenizer: no pieces"
+	if unk_id >= u64(len(pieces)) do return "tokenizer: unk_id out of range"
 
-	m.pieces = pieces[:]
-	m.scores = scores[:]
-	m.types = types[:]
+	m.unk_id = i32(unk_id)
 	m.min_score = max(f32)
 	m.max_score = min(f32)
 	for &id in m.byte_ids do id = -1
-	for piece, i in m.pieces {
-		switch m.types[i] {
+	for piece, i in pieces {
+		switch types[i] {
 		case .Normal:
-			m.min_score = min(m.min_score, m.scores[i])
-			m.max_score = max(m.max_score, m.scores[i])
+			m.min_score = min(m.min_score, scores[i])
+			m.max_score = max(m.max_score, scores[i])
 			fallthrough
 		case .User_Defined:
 			m.ids[piece] = i32(i)
@@ -132,9 +155,9 @@ load :: proc(data: []u8, allocator := context.allocator) -> (m: Model, err: stri
 		}
 	}
 	if m.byte_fallback {
-		for id in m.byte_ids do if id < 0 do return m, "tokenizer: byte fallback without all 256 byte pieces"
+		for id in m.byte_ids do if id < 0 do return "tokenizer: byte fallback without all 256 byte pieces"
 	}
-	return m, ""
+	return ""
 }
 
 destroy :: proc(m: ^Model) {
@@ -169,21 +192,25 @@ Best :: struct {
 // alone becomes <unk> at min_score - 10.
 encode :: proc(m: ^Model, text: string, out: ^[dynamic]Token) {
 	// Normalized bytes and the source bytes each came from: the dummy
-	// prefix from none, an escaped space from its space.
+	// prefix from none, an escaped space from its space, and U+FFFD from
+	// each byte that is not part of valid UTF-8 (as SentencePiece's
+	// normalizer replaces them), so the normalized text is valid UTF-8.
 	norm := make([dynamic]u8, 0, len(text) * 3 + 3, context.temp_allocator)
 	src := make([dynamic][2]int, 0, len(text) * 3 + 3, context.temp_allocator)
 	if m.add_dummy_prefix && len(text) > 0 {
 		append(&norm, SPACE)
 		append(&src, [2]int{0, 0}, [2]int{0, 0}, [2]int{0, 0})
 	}
-	for i := 0; i < len(text); i += 1 {
-		if text[i] == ' ' {
-			append(&norm, SPACE)
+	for i := 0; i < len(text); {
+		r, n := utf8.decode_rune_in_string(text[i:])
+		if text[i] == ' ' || (r == utf8.RUNE_ERROR && n == 1) {
+			append(&norm, SPACE if text[i] == ' ' else "\uFFFD")
 			append(&src, [2]int{i, i + 1}, [2]int{i, i + 1}, [2]int{i, i + 1})
 		} else {
-			append(&norm, text[i])
-			append(&src, [2]int{i, i + 1})
+			append(&norm, text[i:i + n])
+			for k in i ..< i + n do append(&src, [2]int{k, k + 1})
 		}
+		i += n
 	}
 	size := len(norm)
 
@@ -238,10 +265,14 @@ encode :: proc(m: ^Model, text: string, out: ^[dynamic]Token) {
 
 // Text for a run of ids, as SentencePiece decodes: pieces joined, byte
 // pieces as their bytes, "▁" as a space, and the first piece's leading
-// space dropped when the model adds a dummy prefix.
-decode :: proc(m: ^Model, ids: []i32, allocator := context.allocator) -> string {
+// space dropped when the model adds a dummy prefix. `starts`, when given
+// (len(ids) + 1), gets the byte offset where each id's text begins, and
+// the text's length last.
+decode :: proc(m: ^Model, ids: []i32, allocator := context.allocator, starts: []int = nil) -> string {
 	b := strings.builder_make(allocator)
+	defer if starts != nil do starts[len(ids)] = strings.builder_len(b)
 	for id, i in ids {
+		if starts != nil do starts[i] = strings.builder_len(b)
 		if id < 0 || int(id) >= len(m.pieces) do continue
 		switch m.types[id] {
 		case .Byte:
@@ -257,9 +288,8 @@ decode :: proc(m: ^Model, ids: []i32, allocator := context.allocator) -> string 
 					strings.write_byte(&b, ' ')
 					piece = piece[len(SPACE):]
 				} else {
-					r, n := utf8.decode_rune_in_string(piece)
+					_, n := utf8.decode_rune_in_string(piece)
 					strings.write_string(&b, piece[:n])
-					_ = r
 					piece = piece[n:]
 				}
 			}

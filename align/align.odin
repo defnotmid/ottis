@@ -12,7 +12,6 @@ package align
 
 import "core:fmt"
 import "core:math"
-import "core:strings"
 import "core:unicode/utf8"
 import "../ort"
 
@@ -57,10 +56,9 @@ spell :: proc(word: string, out: ^[dynamic]int) {
 		case '’', '‘', '`': folded = "'"
 		case:
 			if r < 0x80 {
-				buf, n := utf8.encode_rune(r)
-				folded = string(buf[:n])
-				folded = strings.clone(folded, context.temp_allocator)
+				if id := letter_id(u8(r)); id >= 0 do append(out, id)
 			}
+			continue
 		}
 		for i in 0 ..< len(folded) {
 			if id := letter_id(folded[i]); id >= 0 do append(out, id)

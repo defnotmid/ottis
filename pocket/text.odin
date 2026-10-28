@@ -58,6 +58,14 @@ terminal_punctuation :: proc(text: string) -> string {
 boundaries :: proc(tok: ^spm.Model, ids: []i32, boundary: []i32, skip_decimals: bool) -> [dynamic]int {
 	out := make([dynamic]int, context.temp_allocator)
 	append(&out, 0)
+	// The decimal check reads the text on both sides of a position: decoded
+	// once, with each token's offset in it.
+	text: string
+	starts: []int
+	if skip_decimals {
+		starts = make([]int, len(ids) + 1, context.temp_allocator)
+		text = spm.decode(tok, ids, context.temp_allocator, starts)
+	}
 	previous := false
 	for id, i in ids {
 		is_boundary := false
@@ -67,7 +75,7 @@ boundaries :: proc(tok: ^spm.Model, ids: []i32, boundary: []i32, skip_decimals: 
 			continue
 		}
 		if previous {
-			if skip_decimals && decimal_period(tok, ids, i) {
+			if skip_decimals && decimal_period(tok, ids, text, starts, i) {
 				previous = false
 				continue
 			}
@@ -79,15 +87,22 @@ boundaries :: proc(tok: ^spm.Model, ids: []i32, boundary: []i32, skip_decimals: 
 	return out
 }
 
+// Whether a segment starting at token `at` (> 0) would start right after a
+// decimal point: the text of the tokens before it ends in a digit and a
+// period, and theirs from it on starts with a digit. Those are the
+// decodes of ids[:at] and ids[at:] that upstream compares, read from
+// `text`, all of `ids` decoded, at the token offsets `starts`; decoded on
+// its own, ids[at:] loses its first piece's leading "▁" (a space here).
 @(private)
-decimal_period :: proc(tok: ^spm.Model, ids: []i32, at: int) -> bool {
-	prefix := spm.decode(tok, ids[:at], context.temp_allocator)
-	suffix := spm.decode(tok, ids[at:], context.temp_allocator)
-	if utf8.rune_count_in_string(prefix) < 2 || suffix == "" do return false
+decimal_period :: proc(tok: ^spm.Model, ids: []i32, text: string, starts: []int, at: int) -> bool {
+	prefix, suffix := text[:starts[at]], text[starts[at]:]
+	if id := ids[at]; tok.add_dummy_prefix && id >= 0 && int(id) < len(tok.pieces) {
+		if (tok.types[id] == .Normal || tok.types[id] == .User_Defined) && strings.has_prefix(tok.pieces[id], spm.SPACE) do suffix = suffix[1:]
+	}
 	last, n := utf8.decode_last_rune_in_string(prefix)
-	before, _ := utf8.decode_last_rune_in_string(prefix[:len(prefix) - n])
+	before, m := utf8.decode_last_rune_in_string(prefix[:len(prefix) - n])
 	next, _ := utf8.decode_rune_in_string(suffix)
-	return last == '.' && unicode.is_digit(before) && unicode.is_digit(next)
+	return n > 0 && m > 0 && suffix != "" && last == '.' && unicode.is_digit(before) && unicode.is_digit(next)
 }
 
 @(private)
