@@ -1,9 +1,9 @@
 // Audio file reading (WAV, FLAC, MP3, Ogg Vorbis and Opus, MP4/M4A, WebM)
-// folded to mono, and 16-bit PCM WAV output, through odecs.
+// folded to mono, and 16-bit PCM WAV output, through oicut.
 package ottis_wav
 
-import odaudio "deps:odecs/audio"
-import odwav "deps:odecs/audio/wav"
+import odaudio "deps:oicut/audio"
+import odwav "deps:oicut/audio/wav"
 import "core:fmt"
 import "core:os"
 

@@ -4,7 +4,7 @@ import "core:log"
 import "core:math"
 import "core:os"
 import "core:testing"
-import "deps:odecs/common"
+import "deps:oicut/common"
 import "../assets"
 
 // `seconds` of a sine at `hz` peaking at `peak_db` dBFS.

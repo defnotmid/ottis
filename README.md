@@ -8,7 +8,7 @@ through ONNX Runtime and writes a WAV plus a Whisper-style JSON of when each
 word is spoken, which onimite's `captions{}` reads as is.
 
 ```sh
-git clone -b v0.0.9 https://github.com/defnotmid/odecs ../odecs   # next to ottis
+git clone -b v0.0.21 https://github.com/defnotmid/oicut ../oicut   # next to ottis
 odin build . -o:speed -collection:deps=.. -out:build/ottis
 build/ottis say "The keeper climbed the spiral stairs." -o line.wav -words line.json
 build/ottis say -f script.txt -voice marius -seed 3 -o scene.wav -words scene.json
@@ -79,7 +79,7 @@ pocket.synthesize(&engine, &voice, "Hello there.", pocket.DEFAULT_OPTIONS, &resu
 // result.words: { text, index, start, end, estimated } for every source word
 // result.chunks: generated chunks with their spans and word ranges
 
-// several lines over the caller's pool (odecs' common.Work_Pool; nil runs
+// several lines over the caller's pool (oicut's common.Work_Pool; nil runs
 // them in order on this thread), each line's failure in its result's err:
 jobs := []pocket.Job{{&voice, "Hello there.", pocket.DEFAULT_OPTIONS}, {&voice, "Goodbye.", pocket.DEFAULT_OPTIONS}}
 results := make([]pocket.Result, len(jobs))
@@ -108,7 +108,7 @@ Runtime C API, loaded at run time), `spm/` (SentencePiece Unigram
 tokenizer), `pocket/` (chunking, generation, loudness), `align/` (resampling, CTC
 forced alignment), `wav/` (audio files to mono, WAV writing), `main.odin`
 (CLI). `PLAN.md` holds the plan, including the native port. Audio decoding
-and WAV writing are [odecs](https://github.com/defnotmid/odecs) v0.0.9's,
+and WAV writing are [oicut](https://github.com/defnotmid/oicut) v0.0.21's,
 the one dependency outside the Odin install: clone it next to ottis and
 build with `-collection:deps=..`.
 `tools/fetch_third_party.sh` clones the upstream Pocket TTS sources, at the
