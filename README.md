@@ -110,7 +110,8 @@ forced alignment), `wav/` (audio files to mono, WAV writing), `main.odin`
 (CLI). `PLAN.md` holds the plan, including the native port. Audio decoding
 and WAV writing are [oicut](https://github.com/defnotmid/oicut) v0.0.21's,
 the one dependency outside the Odin install: clone it next to ottis and
-build with `-collection:deps=..`.
+build with `-collection:deps=..`. ottis builds with Odin `dev-2026-11a` or
+later (archive extraction uses its `core:compress/deflate`).
 `tools/fetch_third_party.sh` clones the upstream Pocket TTS sources, at the
 pinned commit the port follows, into `third_party/` (gitignored, not needed
 to build).

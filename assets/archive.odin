@@ -1,8 +1,7 @@
 package assets
 
 import "core:bytes"
-import "core:compress/gzip"
-import "core:compress/zlib"
+import "core:compress/deflate"
 import "core:encoding/endian"
 import "core:fmt"
 import "core:strings"
@@ -29,10 +28,10 @@ extract :: proc(archive: []u8, members: []string, is_zip: bool) -> ([][]u8, Erro
 
 @(private)
 extract_tgz :: proc(archive: []u8, members: []string, files: [][]u8) -> Error {
-	buf: bytes.Buffer
-	defer bytes.buffer_destroy(&buf)
-	if gerr := gzip.load_from_bytes(archive, &buf); gerr != nil do return fmt.aprintf("gzip: %v", gerr)
-	return extract_tar(bytes.buffer_to_bytes(&buf), members, files)
+	tar: [dynamic]u8
+	defer delete(tar)
+	if gerr := deflate.inflate_gzip(&tar, archive); gerr != nil do return fmt.aprintf("gzip: %v", gerr)
+	return extract_tar(tar[:], members, files)
 }
 
 // "./onnxruntime-x/lib/a.so" -> "lib/a.so"
@@ -152,12 +151,12 @@ extract_zip :: proc(zip: []u8, members: []string, files: [][]u8) -> Error {
 			files[i] = make([]u8, size)
 			copy(files[i], data)
 		case 8:
-			buf: bytes.Buffer
-			if zerr := zlib.inflate_from_byte_array_raw(data, &buf, expected_output_size = size); zerr != nil {
-				bytes.buffer_destroy(&buf)
+			out: [dynamic]u8
+			if zerr := deflate.inflate_raw(&out, data, expected_output_size = size); zerr != nil {
+				delete(out)
 				return fmt.aprintf("zip: inflating %s: %v", name, zerr)
 			}
-			files[i] = bytes.buffer_to_bytes(&buf)
+			files[i] = out[:]
 			if len(files[i]) != size do return fmt.aprintf("zip: %s inflated to %d bytes, expected %d", name, len(files[i]), size)
 		case:
 			return fmt.aprintf("zip: %s uses compression method %d", name, method)
