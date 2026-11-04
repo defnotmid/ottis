@@ -13,6 +13,7 @@ import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import "deps:oicut/common"
 import "../align"
@@ -77,33 +78,36 @@ result_destroy :: proc(r: ^Result) {
 	delete(r.audio)
 	delete(r.words)
 	delete(r.chunks)
+	if r.err != nil do delete(r.err.?)
+	r^ = {}
 }
 
 Engine :: struct {
-	rt:          ort.Runtime,
-	text:        ort.Model,
-	main:        ort.Model,
-	flow:        ort.Model,
-	decoder:     ort.Model,
-	encoder:     ort.Model,  // loaded by the first voice_clone
-	root:        string,     // the bundle's folder, for the encoder
-	tok:         spm.Model,
-	bundle:      Bundle,
-	mimi:        Host_State, // decoder state at the start of a chunk
-	bos_voice:   []f32,      // [1, 1, conditioning_dim] when insert_bos_before_voice
+	rt:           ort.Runtime,
+	text:         ort.Model,
+	main:         ort.Model,
+	flow:         ort.Model,
+	decoder:      ort.Model,
+	encoder:      ort.Model,  // loaded by the first voice_clone
+	encoder_lock: sync.Mutex,
+	root:         string,     // the bundle's folder, for the encoder
+	tok:          spm.Model,
+	bundle:       Bundle,
+	mimi:         Host_State, // decoder state at the start of a chunk
+	bos_voice:    []f32,      // [1, 1, conditioning_dim] when insert_bos_before_voice
 
-	main_in:     []int, // per backbone state entry: model input index
-	main_out:    []int, // ...and output index
-	main_seq:    int,
-	main_text:   int,
-	main_cond:   int,
-	main_eos:    int,
-	dec_in:      []int, // per Mimi state entry (-1: not a decoder input)
-	dec_out:     []int,
-	dec_latent:  int,
-	dec_audio:   int,
+	main_in:      []int, // per backbone state entry: model input index
+	main_out:     []int, // ...and output index
+	main_seq:     int,
+	main_text:    int,
+	main_cond:    int,
+	main_eos:     int,
+	dec_in:       []int, // per Mimi state entry (-1: not a decoder input)
+	dec_out:      []int,
+	dec_latent:   int,
+	dec_audio:    int,
 	flow_c, flow_s, flow_t, flow_x: int,
-	aligner:     align.Aligner,
+	aligner:      align.Aligner,
 }
 
 @(private)
@@ -126,8 +130,9 @@ need :: proc(index: int, what: string) -> Error {
 // ottis starts no threads and the runtime runs no graph on its own (its
 // environment keeps one idle thread): every graph runs on the thread that
 // calls, and `synthesize_batch` spreads lines over the caller's pool.
-engine_init :: proc(e: ^Engine, root, library: string) -> Error {
-	if err := ort.init(&e.rt, library); err != nil do return err
+engine_init :: proc(e: ^Engine, root, library: string) -> (err: Error) {
+	if err = ort.init(&e.rt, library); err != nil do return err
+	defer if err != nil do engine_destroy(e)
 	dir :: assets.BUNDLE_NAME + "/"
 	e.text = ort.load_model(&e.rt, assets.path_in(root, dir + "text_conditioner.onnx")) or_return
 	e.main = ort.load_model(&e.rt, assets.path_in(root, dir + "flow_lm_main.onnx")) or_return
@@ -139,7 +144,7 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	defer delete(tok_data)
 	tok_err: string
 	e.tok, tok_err = spm.load(tok_data)
-	if tok_err != "" do return tok_err
+	if tok_err != "" do return fmt.aprintf("%s", tok_err)
 
 	bundle_data := read(root, dir + "bundle.json") or_return
 	defer delete(bundle_data)
@@ -157,8 +162,6 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 		}
 		e.bos_voice = bos_vals
 	}
-
-	e.mimi = host_state_init(e.bundle.mimi_state_manifest) or_return
 
 	// Wiring by name.
 	fm := e.bundle.flow_lm_state_manifest
@@ -178,7 +181,7 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	need(e.main_text, "text_embeddings") or_return
 	need(e.main_cond, "conditioning") or_return
 	need(e.main_eos, "eos_logit") or_return
-	if len(e.main.inputs) != len(fm) + 2 do return "backbone has inputs outside the manifest"
+	if len(e.main.inputs) != len(fm) + 2 do return fmt.aprintf("backbone has inputs outside the manifest")
 
 	mm := e.bundle.mimi_state_manifest
 	e.dec_in = make([]int, len(mm))
@@ -192,17 +195,19 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	}
 	e.dec_latent = ort.input_index(&e.decoder, "latent")
 	need(e.dec_latent, "latent") or_return
-	if wired + 1 != len(e.decoder.inputs) do return "decoder has inputs outside the manifest"
+	if wired + 1 != len(e.decoder.inputs) do return fmt.aprintf("decoder has inputs outside the manifest")
 	e.dec_audio = -1
 	for _, i in e.decoder.outputs {
 		taken := false
 		for k in e.dec_out do taken ||= k == i
 		if !taken {
-			if e.dec_audio >= 0 do return "decoder has more than one non-state output"
+			if e.dec_audio >= 0 do return fmt.aprintf("decoder has more than one non-state output")
 			e.dec_audio = i
 		}
 	}
 	need(e.dec_audio, "audio output") or_return
+
+	e.mimi = host_state_init(mm, nil, e.dec_in) or_return
 
 	e.flow_c = ort.input_index(&e.flow, "c")
 	e.flow_s = ort.input_index(&e.flow, "s")
@@ -212,7 +217,7 @@ engine_init :: proc(e: ^Engine, root, library: string) -> Error {
 	need(e.flow_s, "s") or_return
 	need(e.flow_t, "t") or_return
 	need(e.flow_x, "x") or_return
-	if len(e.flow.outputs) != 1 do return "flow head has more than one output"
+	if len(e.flow.outputs) != 1 do return fmt.aprintf("flow head has more than one output")
 
 	align.init(&e.aligner, &e.rt, assets.path_in(root, assets.ALIGNER.path)) or_return
 	return nil
@@ -235,12 +240,18 @@ engine_destroy :: proc(e: ^Engine) {
 	delete(e.dec_in)
 	delete(e.dec_out)
 	ort.destroy(&e.rt)
+	e^ = {}
 }
 
-// ORT values over a host state, one per entry.
+// ORT values over a host state, one per entry (nil for unused entries).
 @(private)
-borrow_state :: proc(e: ^Engine, s: ^Host_State, values: []^ort.Value) -> Error {
+borrow_state :: proc(e: ^Engine, s: ^Host_State, values: []^ort.Value) -> (err: Error) {
+	defer if err != nil do release_all(e, values)
 	for &v, i in values {
+		if len(s.shapes[i]) == 0 && len(s.data[i]) == 0 {
+			v = nil
+			continue
+		}
 		v = ort.tensor(&e.rt, raw_data(s.data[i]), len(s.data[i]), s.shapes[i], s.types[i]) or_return
 	}
 	return nil
@@ -318,14 +329,18 @@ voice_clone_file :: proc(e: ^Engine, path: string, name := "") -> (v: Voice, err
 // 30 s, resamples to 24 kHz, trims trailing silence with `end_on_pause`,
 // encodes through `mimi_encoder` and runs the backbone over the voice prompt.
 voice_clone :: proc(e: ^Engine, samples: []f32, sample_rate: int, name := "cloned") -> (v: Voice, err: Error) {
-	if len(samples) == 0 || sample_rate <= 0 do return v, "empty voice prompt"
-	if e.encoder.session == nil {
-		// Only cloning needs the encoder (40 MB): speaking never loads it.
-		path := assets.path_in(e.root, assets.BUNDLE_NAME + "/mimi_encoder.onnx")
-		e.encoder = ort.load_model(&e.rt, path) or_return
-		if len(e.encoder.inputs) != 1 || len(e.encoder.outputs) != 1 {
-			ort.unload_model(&e.encoder)
-			return v, "mimi_encoder: expected one input and one output"
+	if len(samples) == 0 || sample_rate <= 0 do return v, fmt.aprintf("empty voice prompt")
+	{
+		sync.mutex_lock(&e.encoder_lock)
+		defer sync.mutex_unlock(&e.encoder_lock)
+		if e.encoder.session == nil {
+			// Only cloning needs the encoder (40 MB): speaking never loads it.
+			path := assets.path_in(e.root, assets.BUNDLE_NAME + "/mimi_encoder.onnx")
+			e.encoder = ort.load_model(&e.rt, path) or_return
+			if len(e.encoder.inputs) != 1 || len(e.encoder.outputs) != 1 {
+				ort.unload_model(&e.encoder)
+				return v, fmt.aprintf("mimi_encoder: expected one input and one output")
+			}
 		}
 	}
 	src := samples
@@ -335,7 +350,7 @@ voice_clone :: proc(e: ^Engine, samples: []f32, sample_rate: int, name := "clone
 	resampled := align.resample(src, sample_rate, e.bundle.sample_rate, context.temp_allocator)
 	audio := end_on_pause(resampled, e.bundle.sample_rate, context.temp_allocator)
 	if len(audio) < e.bundle.samples_per_frame {
-		return v, "voice prompt is shorter than one frame (80 ms)"
+		return v, fmt.aprintf("voice prompt is shorter than one frame (80 ms)")
 	}
 
 	rt := &e.rt
@@ -450,7 +465,7 @@ voice_destroy :: proc(v: ^Voice) {
 synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, result: ^Result) -> Error {
 	result.sample_rate = e.bundle.sample_rate
 	chunks, ok := split_chunks(&e.tok, text, e.bundle.max_token_per_chunk, e.bundle.remove_semicolons)
-	if !ok do return "nothing to say"
+	if !ok do return fmt.aprintf("nothing to say")
 	source_words := word_spans(text)
 	rng := rng_init(options.seed)
 	word := 0
@@ -523,7 +538,7 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 	ids_value := ort.tensor_i64(rt, ids, {1, i64(n_tokens)}) or_return
 	defer ort.release(rt, ids_value)
 	text_out: [1]^ort.Value
-	if len(e.text.outputs) != 1 do return next_word, "text conditioner has more than one output"
+	if len(e.text.outputs) != 1 do return next_word, fmt.aprintf("text conditioner has more than one output")
 	ort.run(&e.text, {ids_value}, text_out[:]) or_return
 	embeddings := text_out[0]
 	defer ort.release(rt, embeddings)
@@ -575,12 +590,11 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 		ort.release(rt, seq)
 		if run_err != nil do return next_word, run_err
 		defer release_all(e, outputs)
+		result.stats.backbone += time.tick_since(t1)
 
 		eos := ort.view_f32(ort.view(rt, outputs[e.main_eos], shape_buf[:]) or_return)[0]
 		if eos > EOS_THRESHOLD && eos_step < 0 && step >= MIN_FRAMES_BEFORE_EOS do eos_step = step
 		if eos_step >= 0 && step >= eos_step + frames_after_eos do break
-
-		result.stats.backbone += time.tick_since(t1)
 
 		// Flow head: noise to latent.
 		t1 = time.tick_now()
@@ -601,10 +615,10 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 			ort.release(rt, t_value)
 			ort.release(rt, x_value)
 			if flow_err != nil do return next_word, flow_err
+			defer ort.release(rt, flow_out[0])
 			direction := ort.view_f32(ort.view(rt, flow_out[0], shape_buf[:]) or_return)
-			if len(direction) != latent_dim do return next_word, "flow head output has the wrong size"
+			if len(direction) != latent_dim do return next_word, fmt.aprintf("flow head output has the wrong size")
 			for &v, k in x do v += direction[k] * dt
-			ort.release(rt, flow_out[0])
 		}
 		append(&latents, ..x)
 		copy(current, x)
@@ -631,7 +645,10 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 		if dec_err != nil do return next_word, dec_err
 		advance(e, dec_state, dec_outputs, e.dec_out)
 		audio := ort.view_f32(ort.view(rt, dec_outputs[e.dec_audio], shape_buf[:]) or_return)
-		if len(audio) != count * e.bundle.samples_per_frame do return next_word, fmt.aprintf("decoder returned %d samples for %d frames", len(audio), count)
+		if len(audio) != count * e.bundle.samples_per_frame {
+			release_all(e, dec_outputs)
+			return next_word, fmt.aprintf("decoder returned %d samples for %d frames", len(audio), count)
+		}
 		append(&result.audio, ..audio)
 		release_all(e, dec_outputs)
 	}
@@ -658,6 +675,7 @@ time_chunk_words :: proc(e: ^Engine, source: string, words: []Span, first: int, 
 	for w, k in words do texts[k] = source[w.begin:w.end]
 	spans := make([]align.Span, n, context.temp_allocator)
 	if err := align.align(&e.aligner, audio, e.bundle.sample_rate, texts, spans); err != nil {
+		delete(err.?)
 		seconds := f64(len(audio)) / f64(e.bundle.sample_rate)
 		total := 0
 		for t in texts do total += len(t)

@@ -33,10 +33,11 @@ element :: proc(dtype: string) -> (ort.Element_Type, int, bool) {
 // "zeros", "empty"), then overlaid with a saved voice's tensors where it
 // has them (`module/key`; a KV cache shorter than the graph's is copied
 // into its leading positions, and `step` comes from the saved `offset`).
+// When `used` is given, entries with `used[i] < 0` are left unallocated.
 // On an error nothing is returned.
-host_state_init :: proc(manifest: []State_Entry, voice: ^map[string]Safetensor = nil) -> (Host_State, Error) {
+host_state_init :: proc(manifest: []State_Entry, voice: ^map[string]Safetensor = nil, used: []int = nil) -> (Host_State, Error) {
 	s: Host_State
-	if err := build_state(&s, manifest, voice); err != nil {
+	if err := build_state(&s, manifest, voice, used); err != nil {
 		host_state_destroy(&s)
 		return {}, err
 	}
@@ -44,7 +45,7 @@ host_state_init :: proc(manifest: []State_Entry, voice: ^map[string]Safetensor =
 }
 
 @(private)
-build_state :: proc(s: ^Host_State, manifest: []State_Entry, voice: ^map[string]Safetensor) -> Error {
+build_state :: proc(s: ^Host_State, manifest: []State_Entry, voice: ^map[string]Safetensor, used: []int) -> Error {
 	n := len(manifest)
 	s.types = make([]ort.Element_Type, n)
 	s.shapes = make([][]i64, n)
@@ -52,20 +53,23 @@ build_state :: proc(s: ^Host_State, manifest: []State_Entry, voice: ^map[string]
 	for e, i in manifest {
 		type, width, ok := element(e.dtype)
 		if !ok do return fmt.aprintf("state %s: unsupported dtype %s", e.input_name, e.dtype)
+		s.types[i] = type
+		if used != nil && used[i] < 0 do continue
 		count := 1
 		for d in e.shape do count *= int(d)
-		s.types[i] = type
-		s.shapes[i] = e.shape
+		s.shapes[i] = make([]i64, len(e.shape))
+		copy(s.shapes[i], e.shape)
 		s.data[i] = make([]u8, count * width)
 		fill(s.data[i], type, e.fill)
 
 		if voice == nil do continue
+		if e.key == "current_end" && count == 0 do continue
 		key := fmt.tprintf("%s/%s", e.module, e.key)
 		src, found := voice[key]
 		if !found && e.key == "step" {
 			src, found = voice[fmt.tprintf("%s/offset", e.module)]
 		}
-		if !found do continue
+		if !found do return fmt.aprintf("voice has no %s", key)
 		overlay(s.data[i], type, e.shape, src) or_return
 	}
 	return nil
@@ -73,9 +77,11 @@ build_state :: proc(s: ^Host_State, manifest: []State_Entry, voice: ^map[string]
 
 host_state_destroy :: proc(s: ^Host_State) {
 	for d in s.data do delete(d)
+	for sh in s.shapes do delete(sh)
 	delete(s.types)
 	delete(s.shapes)
 	delete(s.data)
+	s^ = {}
 }
 
 @(private)
@@ -102,17 +108,17 @@ fill :: proc(data: []u8, type: ort.Element_Type, how: string) {
 overlay :: proc(dst: []u8, type: ort.Element_Type, dst_shape: []i64, src: Safetensor) -> Error {
 	src_type, width, ok := element(src.dtype)
 	if !ok || src_type != type do return fmt.aprintf("voice tensor type %s does not match state %v", src.dtype, type)
+	if len(src.shape) != len(dst_shape) do return fmt.aprintf("voice tensor rank %d does not match state rank %d", len(src.shape), len(dst_shape))
+	count := 1
+	for d, i in src.shape {
+		if d < 0 || d > dst_shape[i] do return fmt.aprintf("voice tensor is larger than the state")
+		count *= int(d)
+	}
+	if count * width != len(src.data) do return fmt.aprintf("voice tensor's data does not match its shape")
 	if len(src.data) == len(dst) {
 		copy(dst, src.data)
 		return nil
 	}
-	if len(src.shape) != len(dst_shape) do return fmt.aprintf("voice tensor rank %d does not match state rank %d", len(src.shape), len(dst_shape))
-	count := 1
-	for d, i in src.shape {
-		if d < 0 || d > dst_shape[i] do return "voice tensor is larger than the state"
-		count *= int(d)
-	}
-	if count * width != len(src.data) do return "voice tensor's data does not match its shape"
 	copy_block(dst, dst_shape, src.data, src.shape, width)
 	return nil
 }
@@ -139,6 +145,7 @@ host_i64 :: proc(s: ^Host_State, i: int) -> i64 {
 
 // Copies ORT state values into a new Host_State matching `manifest`.
 host_state_from_values :: proc(rt: ^ort.Runtime, manifest: []State_Entry, values: []^ort.Value) -> (s: Host_State, err: Error) {
+	defer if err != nil do host_state_destroy(&s)
 	n := len(manifest)
 	s.types = make([]ort.Element_Type, n)
 	s.shapes = make([][]i64, n)
@@ -150,7 +157,8 @@ host_state_from_values :: proc(rt: ^ort.Runtime, manifest: []State_Entry, values
 		t := ort.view(rt, values[i], shape_buf[:]) or_return
 		if t.type != type do return s, fmt.aprintf("state %s: got %v, expected %v", e.input_name, t.type, type)
 		s.types[i] = type
-		s.shapes[i] = e.shape
+		s.shapes[i] = make([]i64, len(e.shape))
+		copy(s.shapes[i], e.shape)
 		bytes := t.count * width
 		s.data[i] = make([]u8, bytes)
 		if bytes > 0 && t.data != nil {

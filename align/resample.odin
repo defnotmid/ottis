@@ -6,6 +6,7 @@ import "core:math"
 // at the lower of the two Nyquist rates. Lengths scale exactly:
 // len(out) = floor(len(src) * to / from).
 resample :: proc(src: []f32, from_rate, to_rate: int, allocator := context.allocator) -> []f32 {
+	if len(src) == 0 || from_rate <= 0 || to_rate <= 0 do return nil
 	if from_rate == to_rate {
 		out := make([]f32, len(src), allocator)
 		copy(out, src)

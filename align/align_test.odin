@@ -63,15 +63,26 @@ spelling_folds_and_drops :: proc(t: ^testing.T) {
 
 @(test)
 resample_keeps_tone_and_length :: proc(t: ^testing.T) {
+	testing.expect_value(t, len(resample(nil, 24000, 16000, context.temp_allocator)), 0)
 	src := make([]f32, 24000, context.temp_allocator)
 	for &v, i in src do v = f32(sin_440(f64(i) / 24000))
-	out := resample(src, 24000, 16000, context.temp_allocator)
-	testing.expect_value(t, len(out), 16000)
-	worst: f64
-	for v, i in out[200:len(out) - 200] {
-		worst = max(worst, abs(f64(v) - sin_440(f64(i + 200) / 16000)))
+	testing.expect_value(t, len(resample(src, 0, 16000, context.temp_allocator)), 0)
+	testing.expect_value(t, len(resample(src, 24000, -1, context.temp_allocator)), 0)
+
+	// The aligner's rate, and every rate a recording comes at to the model's.
+	rates := [][2]int{{24000, 16000}, {24000, 16001}, {8000, 24000}, {11025, 24000}, {16000, 24000}, {22050, 24000}, {32000, 24000}, {44100, 24000}, {48000, 24000}, {96000, 24000}}
+	for r in rates {
+		tone := make([]f32, r[0], context.temp_allocator)
+		for &v, i in tone do v = f32(sin_440(f64(i) / f64(r[0])))
+		out := resample(tone, r[0], r[1], context.temp_allocator)
+		testing.expect_value(t, len(out), r[1])
+		edge := r[1] / 80
+		worst: f64
+		for v, i in out[edge:len(out) - edge] {
+			worst = max(worst, abs(f64(v) - sin_440(f64(i + edge) / f64(r[1]))))
+		}
+		testing.expectf(t, worst < 1e-3, "%d -> %d: worst error %f", r[0], r[1], worst)
 	}
-	testing.expectf(t, worst < 1e-3, "worst error %f", worst)
 }
 
 @(private = "file")

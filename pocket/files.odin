@@ -45,7 +45,7 @@ parse_bundle :: proc(data: []u8, allocator := context.allocator) -> (Bundle, Err
 	if jerr := json.unmarshal(data, &b); jerr != nil {
 		err = fmt.aprintf("bundle.json: %v", jerr)
 	} else if b.sample_rate <= 0 || b.samples_per_frame <= 0 || b.latent_dim <= 0 || b.conditioning_dim <= 0 {
-		err = "bundle.json: missing dimensions"
+		err = fmt.aprintf("bundle.json: missing dimensions")
 	}
 	if err != nil {
 		bundle_destroy(&b)
@@ -73,26 +73,26 @@ bundle_destroy :: proc(b: ^Bundle) {
 
 // A float32 .npy array (C order). On an error nothing is returned.
 parse_npy_f32 :: proc(data: []u8) -> (values: []f32, shape: [dynamic]i64, err: Error) {
-	if len(data) < 10 || string(data[:6]) != "\x93NUMPY" do return nil, nil, "npy: bad magic"
+	if len(data) < 10 || string(data[:6]) != "\x93NUMPY" do return nil, nil, fmt.aprintf("npy: bad magic")
 	header_len, start: int
 	switch data[6] {
 	case 1:
 		header_len, start = int(endian.unchecked_get_u16le(data[8:])), 10
 	case 2, 3:
-		if len(data) < 12 do return nil, nil, "npy: truncated header"
+		if len(data) < 12 do return nil, nil, fmt.aprintf("npy: truncated header")
 		header_len, start = int(endian.unchecked_get_u32le(data[8:])), 12
 	case:
-		return nil, nil, "npy: unknown version"
+		return nil, nil, fmt.aprintf("npy: unknown version")
 	}
-	if header_len > len(data) - start do return nil, nil, "npy: truncated header"
+	if header_len > len(data) - start do return nil, nil, fmt.aprintf("npy: truncated header")
 	header := string(data[start:][:header_len])
 	if !strings.contains(header, "'descr': '<f4'") do return nil, nil, fmt.aprintf("npy: not little-endian float32: %s", header)
-	if strings.contains(header, "'fortran_order': True") do return nil, nil, "npy: Fortran order"
+	if strings.contains(header, "'fortran_order': True") do return nil, nil, fmt.aprintf("npy: Fortran order")
 	open := strings.index(header, "'shape': (")
-	if open < 0 do return nil, nil, "npy: no shape"
+	if open < 0 do return nil, nil, fmt.aprintf("npy: no shape")
 	dims := header[open + len("'shape': ("):]
 	close := strings.index_byte(dims, ')')
-	if close < 0 do return nil, nil, "npy: bad shape"
+	if close < 0 do return nil, nil, fmt.aprintf("npy: bad shape")
 	dims = dims[:close]
 	body := data[start + header_len:]
 	rank := 0
@@ -102,14 +102,14 @@ parse_npy_f32 :: proc(data: []u8) -> (values: []f32, shape: [dynamic]i64, err: E
 		p := strings.trim_space(part)
 		if p == "" do continue
 		v, ok := strconv.parse_i64(p)
-		if !ok || v < 0 || rank == len(sizes) do return nil, nil, "npy: bad shape"
+		if !ok || v < 0 || rank == len(sizes) do return nil, nil, fmt.aprintf("npy: bad shape")
 		// Bounded by the body as it grows, so it cannot overflow.
-		if v > 0 && count > len(body) / int(v) do return nil, nil, "npy: size does not match shape"
+		if v > 0 && count > len(body) / int(v) do return nil, nil, fmt.aprintf("npy: size does not match shape")
 		sizes[rank] = v
 		rank += 1
 		count *= int(v)
 	}
-	if len(body) != count * 4 do return nil, nil, "npy: size does not match shape"
+	if len(body) != count * 4 do return nil, nil, fmt.aprintf("npy: size does not match shape")
 	shape = make([dynamic]i64, rank)
 	copy(shape[:], sizes[:rank])
 	values = make([]f32, count)
@@ -137,30 +137,32 @@ parse_safetensors :: proc(data: []u8, allocator := context.allocator) -> (map[st
 
 @(private)
 read_safetensors :: proc(tensors: ^map[string]Safetensor, data: []u8) -> Error {
-	if len(data) < 8 do return "safetensors: truncated"
+	if len(data) < 8 do return fmt.aprintf("safetensors: truncated")
 	header := endian.unchecked_get_u64le(data)
-	if header > u64(len(data) - 8) do return "safetensors: truncated header"
+	if header > u64(len(data) - 8) do return fmt.aprintf("safetensors: truncated header")
 	n := int(header)
 	body := data[8 + n:]
 	root, perr := json.parse(data[8:][:n], parse_integers = true, allocator = context.temp_allocator)
 	if perr != nil do return fmt.aprintf("safetensors: %v", perr)
 	object, is_object := root.(json.Object)
-	if !is_object do return "safetensors: header is not an object"
+	if !is_object do return fmt.aprintf("safetensors: header is not an object")
 	for name, value in object {
 		if name == "__metadata__" do continue
 		entry, ok := value.(json.Object)
 		if !ok do return fmt.aprintf("safetensors: bad entry %s", name)
-		shape, _ := entry["shape"].(json.Array)
+		shape, shape_ok := entry["shape"].(json.Array)
+		if !shape_ok do return fmt.aprintf("safetensors: bad shape for %s", name)
 		for d in shape {
 			v, is_int := d.(json.Integer)
 			if !is_int || v < 0 do return fmt.aprintf("safetensors: bad shape for %s", name)
 		}
-		offsets, _ := entry["data_offsets"].(json.Array)
-		if len(offsets) != 2 do return fmt.aprintf("safetensors: bad offsets for %s", name)
-		a, _ := offsets[0].(json.Integer)
-		b, _ := offsets[1].(json.Integer)
-		if a < 0 || b < a || b > i64(len(body)) do return fmt.aprintf("safetensors: offsets out of range for %s", name)
-		dtype, _ := entry["dtype"].(json.String)
+		offsets, offsets_ok := entry["data_offsets"].(json.Array)
+		if !offsets_ok || len(offsets) != 2 do return fmt.aprintf("safetensors: bad offsets for %s", name)
+		a, a_ok := offsets[0].(json.Integer)
+		b, b_ok := offsets[1].(json.Integer)
+		if !a_ok || !b_ok || a < 0 || b < a || b > i64(len(body)) do return fmt.aprintf("safetensors: offsets out of range for %s", name)
+		dtype, dtype_ok := entry["dtype"].(json.String)
+		if !dtype_ok || dtype == "" do return fmt.aprintf("safetensors: bad dtype for %s", name)
 		t := Safetensor{dtype = strings.clone(dtype), shape = make([]i64, len(shape)), data = body[a:b]}
 		for d, i in shape do t.shape[i] = d.(json.Integer)
 		tensors[strings.clone(name)] = t

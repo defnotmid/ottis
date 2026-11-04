@@ -45,6 +45,7 @@ files_refuse_bad_input :: proc(t: ^testing.T) {
 		values, shape, err := parse_npy_f32(c.data)
 		testing.expectf(t, err.? == c.err, "%q: %v, want %s", c.data, err, c.err)
 		testing.expect(t, values == nil && shape == nil)
+		delete(err.?)
 	}
 	values, shape, err := parse_npy_f32(npy(1, F32 + "'shape': (1, 2), }", 8))
 	testing.expect(t, err == nil && len(values) == 2 && len(shape) == 2 && shape[0] == 1 && shape[1] == 2)
@@ -55,6 +56,7 @@ files_refuse_bad_input :: proc(t: ^testing.T) {
 	tensors, terr := parse_safetensors(huge)
 	testing.expect_value(t, terr.?, "safetensors: truncated header")
 	testing.expect(t, tensors == nil)
+	delete(terr.?)
 
 	header := `{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"b":{"dtype":"F32","shape":[-1],"data_offsets":[0,4]}}`
 	file := make([dynamic]u8, context.temp_allocator)
@@ -66,19 +68,64 @@ files_refuse_bad_input :: proc(t: ^testing.T) {
 	testing.expect(t, tensors == nil)
 	delete(terr.?)
 
+	bad_headers := []struct {
+		hdr: string,
+		err: string,
+	} {
+		{`{"a":{"dtype":123,"shape":[1],"data_offsets":[0,4]}}`, "safetensors: bad dtype for a"},
+		{`{"a":{"dtype":"F32","shape":"bad","data_offsets":[0,4]}}`, "safetensors: bad shape for a"},
+		{`{"a":{"dtype":"F32","shape":[1],"data_offsets":[0]}}`, "safetensors: bad offsets for a"},
+	}
+	for bh in bad_headers {
+		clear(&file)
+		append(&file, u8(len(bh.hdr)), 0, 0, 0, 0, 0, 0, 0)
+		append(&file, bh.hdr)
+		append(&file, 0, 0, 0, 0)
+		tensors, terr = parse_safetensors(file[:])
+		testing.expect_value(t, terr.?, bh.err)
+		testing.expect(t, tensors == nil)
+		delete(terr.?)
+	}
+
 	testing.expectf(t, len(track.allocation_map) == 0, "%d allocations left", len(track.allocation_map))
 }
 
-// A saved tensor whose data is not as long as its shape says is refused
-// before anything is copied.
+// A saved tensor whose data is not as long as its shape says (or whose shape
+// exceeds a destination axis even when byte counts match) is refused before
+// anything is copied; missing voice tensors are refused, as is a voice of
+// Kyutai's 2026-02 format, which has no step (made for older weights).
 @(test)
 overlay_checks_saved_tensor :: proc(t: ^testing.T) {
 	dst := make([]u8, 4 * 4 * 4, context.temp_allocator)
 	src := Safetensor{dtype = "F32", shape = {2, 2}, data = make([]u8, 8, context.temp_allocator)}
 	err := overlay(dst, .Float32, {4, 4}, src)
 	testing.expect_value(t, err.?, "voice tensor's data does not match its shape")
+	delete(err.?)
+
+	same_bytes_bad_shape := Safetensor{dtype = "F32", shape = {1, 16}, data = make([]u8, 64, context.temp_allocator)}
+	err = overlay(dst, .Float32, {4, 4}, same_bytes_bad_shape)
+	testing.expect_value(t, err.?, "voice tensor is larger than the state")
+	delete(err.?)
+
 	src.data = make([]u8, 16, context.temp_allocator)
 	for &b in src.data do b = 1
 	testing.expect(t, overlay(dst, .Float32, {4, 4}, src) == nil)
 	testing.expect(t, dst[0] == 1 && dst[7] == 1 && dst[8] == 0 && dst[16] == 1)
+
+	manifest := []State_Entry {
+		{input_name = "s0", module = "m0", key = "current_end", dtype = "int64", shape = {0}, fill = "empty"},
+		{input_name = "s1", module = "m0", key = "cache", dtype = "float32", shape = {4}, fill = "zeros"},
+		{input_name = "s2", module = "m0", key = "step", dtype = "int64", shape = {1}, fill = "zeros"},
+	}
+	empty_voice := make(map[string]Safetensor, context.temp_allocator)
+	_, serr := host_state_init(manifest, &empty_voice)
+	testing.expect_value(t, serr.?, "voice has no m0/cache")
+	delete(serr.?)
+
+	old_voice := make(map[string]Safetensor, context.temp_allocator)
+	old_voice["m0/cache"] = Safetensor{dtype = "F32", shape = {3}, data = make([]u8, 12, context.temp_allocator)}
+	old_voice["m0/current_end"] = Safetensor{dtype = "F32", shape = {3}, data = make([]u8, 12, context.temp_allocator)}
+	_, oerr := host_state_init(manifest, &old_voice)
+	testing.expect_value(t, oerr.?, "voice has no m0/step")
+	delete(oerr.?)
 }

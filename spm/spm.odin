@@ -222,7 +222,10 @@ encode :: proc(m: ^Model, text: string, out: ^[dynamic]Token) {
 		char_len := min(utf8_len(norm[start]), size - start)
 		here := best[start].score
 		has_single := false
-		for end := start + 1; end <= min(size, start + m.max_piece_bytes); end += 1 {
+		limit := min(size, start + m.max_piece_bytes)
+		for end := start; end < limit; {
+			end += min(utf8_len(norm[end]), size - end)
+			if end > limit do break
 			id, found := m.ids[string(norm[start:end])]
 			if !found do continue
 			length := end - start

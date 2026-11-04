@@ -8,7 +8,7 @@ through ONNX Runtime and writes a WAV plus a Whisper-style JSON of when each
 word is spoken, which onimite's `captions{}` reads as is.
 
 ```sh
-git clone -b v0.0.21 https://github.com/defnotmid/oicut ../oicut   # next to ottis
+git clone -b v0.0.25 https://github.com/defnotmid/oicut ../oicut   # next to ottis
 odin build . -o:speed -collection:deps=.. -out:build/ottis
 build/ottis say "The keeper climbed the spiral stairs." -o line.wav -words line.json
 build/ottis say -f script.txt -voice marius -seed 3 -o scene.wav -words scene.json
@@ -108,7 +108,7 @@ Runtime C API, loaded at run time), `spm/` (SentencePiece Unigram
 tokenizer), `pocket/` (chunking, generation, loudness), `align/` (resampling, CTC
 forced alignment), `wav/` (audio files to mono, WAV writing), `main.odin`
 (CLI). `PLAN.md` holds the plan, including the native port. Audio decoding
-and WAV writing are [oicut](https://github.com/defnotmid/oicut) v0.0.21's,
+and WAV writing are [oicut](https://github.com/defnotmid/oicut) v0.0.25's,
 the one dependency outside the Odin install: clone it next to ottis and
 build with `-collection:deps=..`. ottis builds with Odin `dev-2026-11a` or
 later (archive extraction uses its `core:compress/deflate`).

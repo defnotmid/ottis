@@ -21,7 +21,7 @@ presenting generated audio as genuine recordings of real people or events.
 ## Built into ottis
 
 Audio files are decoded and WAVs written by
-[oicut](https://github.com/defnotmid/oicut) v0.0.21 (`deps:oicut/audio`,
+[oicut](https://github.com/defnotmid/oicut) v0.0.25 (`deps:oicut/audio`,
 `deps:oicut/audio/wav`), and the mascot tool's PNGs by its image package. A
 program that ships ottis carries these licences:
 

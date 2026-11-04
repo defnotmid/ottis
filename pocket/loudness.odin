@@ -32,6 +32,7 @@ normalize_loudness :: proc(samples: []f32, rate: int) {
 // or less than 100 ms. A line under 400 ms is one block of its steps.
 integrated_loudness :: proc(samples: []f32, rate: int) -> f64 {
 	step := rate / 10
+	if step <= 0 do return math.inf_f64(-1)
 	energy := make([]f64, len(samples) / step, context.temp_allocator)
 	if len(energy) == 0 do return math.inf_f64(-1)
 	shelf, hp := k_coefficients(rate)
@@ -76,9 +77,9 @@ true_peak :: proc(samples: []f32) -> f64 {
 	for v in samples do peak = max(peak, abs(v))
 	for i in TAPS - 1 ..< len(samples) - TAPS {
 		win := samples[i - TAPS + 1:][:2 * TAPS]
-		for row in kernel {
+		for &row in kernel {
 			sum: f32
-			for k in 0 ..< 2 * TAPS do sum += win[k] * row[k]
+			#no_bounds_check for k in 0 ..< 2 * TAPS do sum += win[k] * row[k]
 			peak = max(peak, abs(sum))
 		}
 	}

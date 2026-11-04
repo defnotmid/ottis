@@ -10,6 +10,7 @@ package assets
 import "core:crypto/sha2"
 import "core:encoding/hex"
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -145,18 +146,16 @@ RUNTIME_DIR :: "onnxruntime-" + ORT_VERSION
 // release with its LICENSE and ThirdPartyNotices.txt. Returns its path.
 ensure_runtime :: proc(root: string, verify := false, progress: Progress = nil) -> (library: string, err: Error) {
 	dir := path_in(root, RUNTIME_DIR)
-	library = path_in(dir, RUNTIME.library, context.allocator)
 	names := [3]string{RUNTIME.library, "LICENSE", "ThirdPartyNotices.txt"}
 	members := [3]string{RUNTIME.member, "LICENSE", "ThirdPartyNotices.txt"}
 	present := true
 	for name in names do present &&= os.exists(path_in(dir, name))
-	if present && !verify do return library, nil
+	if present && !verify do return path_in(dir, RUNTIME.library, context.allocator), nil
 
 	ensure(root, RUNTIME.archive, verify, progress) or_return
-	if present do return library, nil
-	say(progress, "extracting %s", RUNTIME.library)
+	if !present do say(progress, "extracting %s", RUNTIME.library)
 	archive, rerr := os.read_entire_file(path_in(root, RUNTIME.archive.path), context.allocator)
-	if rerr != nil do return library, fmt.aprintf("reading %s: %v", RUNTIME.archive.path, rerr)
+	if rerr != nil do return "", fmt.aprintf("reading %s: %v", RUNTIME.archive.path, rerr)
 	defer delete(archive)
 	make_dirs(dir) or_return
 	files := extract(archive, members[:], strings.has_suffix(RUNTIME.archive.path, ".zip")) or_return
@@ -166,14 +165,19 @@ ensure_runtime :: proc(root: string, verify := false, progress: Progress = nil) 
 	}
 	for data, i in files {
 		path := path_in(dir, names[i])
+		if present {
+			if existing, eerr := os.read_entire_file(path, context.temp_allocator); eerr == nil && mem.compare(existing, data) == 0 {
+				continue
+			}
+		}
 		part := strings.concatenate({path, ".part"}, context.temp_allocator)
 		if werr := os.write_entire_file(part, data, os.Permissions_Read_All + {.Write_User, .Execute_User}); werr != nil {
-			return library, fmt.aprintf("writing %s: %v", part, werr)
+			return "", fmt.aprintf("writing %s: %v", part, werr)
 		}
 		os.remove(path)
-		if werr := os.rename(part, path); werr != nil do return library, fmt.aprintf("renaming %s: %v", part, werr)
+		if werr := os.rename(part, path); werr != nil do return "", fmt.aprintf("renaming %s: %v", part, werr)
 	}
-	return library, nil
+	return path_in(dir, RUNTIME.library, context.allocator), nil
 }
 
 ensure_bundle :: proc(root: string, verify := false, progress: Progress = nil) -> Error {
@@ -194,13 +198,14 @@ ensure_voice :: proc(root, name: string, verify := false, progress: Progress = n
 // Everything `say` needs for `voice` (when `voice` is a file path or empty,
 // only the runtime and bundle are fetched).
 fetch :: proc(root: string, voice := "", verify := false, progress: Progress = nil) -> (library: string, err: Error) {
-	library = ensure_runtime(root, verify, progress) or_return
+	lib := ensure_runtime(root, verify, progress) or_return
+	defer if err != nil do delete(lib)
 	ensure_bundle(root, verify, progress) or_return
 	if voice != "" {
 		if _, known := voice_pin(voice); known || !os.exists(voice) {
 			ensure_voice(root, voice, verify, progress) or_return
 		}
 	}
-	return library, nil
+	return lib, nil
 }
 

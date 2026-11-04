@@ -71,11 +71,12 @@ Aligner :: struct {
 	logits: int, // output index
 }
 
-init :: proc(a: ^Aligner, rt: ^ort.Runtime, path: string) -> ort.Error {
+init :: proc(a: ^Aligner, rt: ^ort.Runtime, path: string) -> (err: ort.Error) {
 	a.model = ort.load_model(rt, path) or_return
-	if len(a.model.inputs) != 1 || string(a.model.inputs[0]) != "input_values" do return "aligner: expected one input, input_values"
+	defer if err != nil do destroy(a)
+	if len(a.model.inputs) != 1 || string(a.model.inputs[0]) != "input_values" do return fmt.aprintf("aligner: expected one input, input_values")
 	a.logits = ort.output_index(&a.model, "logits")
-	if a.logits < 0 do return "aligner: no logits output"
+	if a.logits < 0 do return fmt.aprintf("aligner: no logits output")
 	return nil
 }
 
@@ -97,7 +98,7 @@ align :: proc(a: ^Aligner, audio: []f32, rate: int, words: []string, spans: []Sp
 
 	// Recognizer input: 16 kHz, zero mean, unit variance.
 	x := resample(audio, rate, SAMPLE_RATE, context.temp_allocator)
-	if len(x) < 400 do return "aligner: audio too short"
+	if len(x) < 400 do return fmt.aprintf("aligner: audio too short")
 	mean, sq: f64
 	for v in x do mean += f64(v)
 	mean /= f64(len(x))
@@ -112,7 +113,7 @@ align :: proc(a: ^Aligner, audio: []f32, rate: int, words: []string, spans: []Sp
 	defer for v in outputs do ort.release(rt, v)
 	shape: [4]i64
 	view := ort.view(rt, outputs[a.logits], shape[:]) or_return
-	if len(view.shape) != 3 || view.shape[2] != 32 do return "aligner: logits are not [1, frames, 32]"
+	if len(view.shape) != 3 || view.shape[2] != 32 do return fmt.aprintf("aligner: logits are not [1, frames, 32]")
 	frames := int(view.shape[1])
 	logp := log_softmax(ort.view_f32(view), frames, 32)
 

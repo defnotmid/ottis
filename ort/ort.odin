@@ -128,7 +128,7 @@ check :: proc(rt: ^Runtime, s: ^Status, what: string) -> Error {
 	return message
 }
 
-init :: proc(rt: ^Runtime, library_path: string) -> Error {
+init :: proc(rt: ^Runtime, library_path: string) -> (err: Error) {
 	// A hardened-runtime process (macOS, as a notarized app embedding ottis
 	// is) refuses to dlopen a relative path, and a data dir may be one.
 	path, aerr := os.get_absolute_path(library_path, context.temp_allocator)
@@ -174,6 +174,7 @@ init :: proc(rt: ^Runtime, library_path: string) -> Error {
 	rt.release_info = slot(api, .Release_Tensor_Type_And_Shape_Info, type_of(rt.release_info))
 	rt.release_options = slot(api, .Release_Session_Options, type_of(rt.release_options))
 
+	defer if err != nil do destroy(rt)
 	WARNING :: 2
 	check(rt, rt.create_env(WARNING, "ottis", &rt.env), "creating environment") or_return
 	DEVICE_ARENA :: 1
@@ -199,6 +200,7 @@ Model :: struct {
 
 load_model :: proc(rt: ^Runtime, path: string) -> (m: Model, err: Error) {
 	m.rt = rt
+	defer if err != nil do unload_model(&m)
 	so: ^Session_Options
 	check(rt, rt.create_options(&so), "session options") or_return
 	defer rt.release_options(so)

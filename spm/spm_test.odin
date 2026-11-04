@@ -134,3 +134,16 @@ load_refuses_malformed_models :: proc(t: ^testing.T) {
 	destroy(&m)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
+
+// Only a piece that names its byte decodes to it: load leaves a malformed
+// byte piece out of byte_ids.
+@(test)
+decode_skips_malformed_byte_pieces :: proc(t: ^testing.T) {
+	m := Model {
+		pieces = {"<0x41>", "<0xZZ>", "abcdef"},
+		types  = {.Byte, .Byte, .Byte},
+	}
+	for &id in m.byte_ids do id = -1
+	m.byte_ids[0x41] = 0
+	testing.expect_value(t, decode(&m, {0, 1, 2}, context.temp_allocator), "A")
+}
