@@ -113,8 +113,14 @@ Measured on the 9900X3D, `-o:speed`, 4 intra-op threads per graph:
 
 Word starts land on the voice's onsets where a word has one (onimite's
 `hit` cue check passes for "lamp" and "dark"); numbers and symbols are
-wildcards spanning what was said, marked `"estimated"`. Alignment costs
-about 2% of real time.
+wildcards spanning what was said, marked `"estimated"`. Alignment cost
+about 2% of real time at 4 threads per graph.
+
+Since v0.0.7 every graph runs on the thread that calls it (one intra-op and
+one inter-op thread), and a batch spreads whole lines over the caller's
+pool. On v0.0.14 (2026-11-10, a loaded 9900X3D) a 5.68 s line takes
+1.9-2.5 s on one core (2.3-3.0x real time): backbone 56%, alignment 18%,
+decode 17%, flow 5%, text and prompt 2-3%.
 
 Verified: tokenizer ids equal SentencePiece's (`odin test spm`); fetch,
 extract and patch on Linux x64; zip (Windows) and macOS/arm64 tar
@@ -126,9 +132,10 @@ arm64 binaries.
 
 Next for this lane:
 
-- Process time is ~6x wall time (ORT threads spin): try disabling spinning,
-  fewer threads for the small graphs, the int8 graphs, and decoding on a
-  second thread while the backbone runs (upstream does), then measure.
+- Done in v0.0.7: process time was ~6x wall time (ORT threads spin); every
+  graph now runs on one thread, the caller's, and ORT spins no pool.
+  Still open: the int8 graphs, and decoding on a second thread while the
+  backbone runs (upstream does), then measure.
 - onimite: a `say()` binding that synthesizes at load (content-addressed
   cache, one engine per process on onimite's pool) and registers the clip,
   its captions and word cues.

@@ -58,27 +58,41 @@ Stats :: struct {
 
 // One generated chunk: its prompt text, its audio span and its words.
 Chunk_Info :: struct {
-	text:        string, // owned
+	text:        Span, // the prompt text, in the result's `text` (`text_of`)
 	start, end:  f64, // seconds
 	first_word:  int,
 	word_count:  int,
 }
 
+// What `synthesize` makes, all of it owned: the words' and chunks' texts are
+// copied into `text` and named by byte span, so a result outlives the text
+// it was spoken from. Its parts come from the context's allocator while
+// `synthesize` runs (one allocator per result), kept in `allocator` so
+// `result_destroy` frees them there.
 Result :: struct {
 	audio:       [dynamic]f32, // mono, `sample_rate`, at LOUDNESS_TARGET
 	sample_rate: int,
 	words:       [dynamic]Word, // every source word, in order
 	chunks:      [dynamic]Chunk_Info,
+	text:        [dynamic]u8, // the words' and chunks' texts
 	stats:       Stats,
 	err:         Error, // the line's failure, from synthesize_batch
+	allocator:   mem.Allocator,
 }
 
+// A word's or chunk's text. It reads `r.text` in place: it holds until the
+// result grows or is destroyed.
+text_of :: proc(r: ^Result, s: Span) -> string {
+	return string(r.text[s.begin:s.end])
+}
+
+// Frees a result with the allocator it was made in, whatever the context's.
 result_destroy :: proc(r: ^Result) {
-	for c in r.chunks do delete(c.text)
 	delete(r.audio)
 	delete(r.words)
 	delete(r.chunks)
-	if r.err != nil do delete(r.err.?)
+	delete(r.text)
+	if r.err != nil do delete(r.err.?, r.allocator)
 	r^ = {}
 }
 
@@ -125,7 +139,8 @@ need :: proc(index: int, what: string) -> Error {
 }
 
 // Loads the bundle under `root` (as `assets.fetch` leaves it). After init
-// the engine is read-only: `synthesize` may run on several threads at once
+// the engine is read-only, but for the encoder the first `voice_clone`
+// loads under a lock: `synthesize` may run on several threads at once
 // (ONNX Runtime sessions allow concurrent runs), each with its own Result.
 // ottis starts no threads and the runtime runs no graph on its own (its
 // environment keeps one idle thread): every graph runs on the thread that
@@ -462,7 +477,12 @@ voice_destroy :: proc(v: ^Voice) {
 // Speaks `text` in `voice` into `result` (audio, word timings, chunks),
 // the line scaled to LOUDNESS_TARGET whatever the voice (loudness.odin).
 // Deterministic: the same text, voice and options give the same samples.
+// Scratch goes on the temp allocator, which is left as it was found, chunk
+// by chunk, when it is Odin's default one; a result that lives in the temp
+// allocator itself is kept (not one in an allocator built on it).
 synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, result: ^Result) -> Error {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = context.allocator == context.temp_allocator)
+	if result.allocator.procedure == nil do result.allocator = context.allocator
 	result.sample_rate = e.bundle.sample_rate
 	chunks, ok := split_chunks(&e.tok, text, e.bundle.max_token_per_chunk, e.bundle.remove_semicolons)
 	if !ok do return fmt.aprintf("nothing to say")
@@ -474,7 +494,9 @@ synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, re
 		start := f64(len(result.audio)) / f64(result.sample_rate)
 		next := synthesize_chunk(e, voice, text, source_words[:], chunk, word, options, &rng, result) or_return
 		end := f64(len(result.audio)) / f64(result.sample_rate)
-		append(&result.chunks, Chunk_Info{strings.clone(chunk), start, end, word, next - word})
+		begin := len(result.text)
+		append(&result.text, chunk)
+		append(&result.chunks, Chunk_Info{{begin, len(result.text)}, start, end, word, next - word})
 		word = next
 	}
 	normalize_loudness(result.audio[line_start:], result.sample_rate)
@@ -491,12 +513,12 @@ Job :: struct {
 // Speaks each job into the result at its index, the lines spread over the
 // caller's pool (nil: in order on the calling thread). A line runs whole on
 // one thread, so its samples are the ones `synthesize` gives, at any pool
-// size. A failed line leaves its error in
-// its result's `err`, and the others still complete. Audio, words, chunks
-// and errors come from `allocator`, which must be thread-safe when the pool
-// runs ranges at once; words borrow their job's text. A line's scratch is
-// the running thread's temp allocator, rewound after the line when it is
-// Odin's default one.
+// size. Lines differ in length, so each of the pool's tasks takes the next
+// line not yet taken rather than a fixed range of them. A failed line
+// leaves its error in its result's `err`, and the others still complete.
+// Results come from `allocator`, which must be thread-safe when the pool
+// runs tasks at once. A line's scratch is the running thread's temp
+// allocator (see `synthesize`).
 synthesize_batch :: proc(e: ^Engine, pool: ^common.Work_Pool, jobs: []Job, results: []Result, allocator := context.allocator) {
 	assert(len(results) == len(jobs))
 	Batch :: struct {
@@ -504,23 +526,26 @@ synthesize_batch :: proc(e: ^Engine, pool: ^common.Work_Pool, jobs: []Job, resul
 		jobs:      []Job,
 		results:   []Result,
 		allocator: mem.Allocator,
+		next:      int, // the next line to take
 	}
-	lines :: proc(data: rawptr, first, end: int) {
+	lines :: proc(data: rawptr, _, _: int) {
 		b := (^Batch)(data)
 		context.allocator = b.allocator
-		for i in first ..< end {
-			runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+		for {
+			i := sync.atomic_add(&b.next, 1)
+			if i >= len(b.jobs) do break
 			j := &b.jobs[i]
 			b.results[i].err = synthesize(b.e, j.voice, j.text, j.options, &b.results[i])
 		}
 	}
-	b := Batch{e, jobs, results, allocator}
+	b := Batch{e, jobs, results, allocator, 0}
 	if pool == nil do lines(&b, 0, len(jobs))
 	else do pool.run(pool, len(jobs), lines, &b)
 }
 
 @(private)
 synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words: []Span, chunk: string, first_word: int, options: Options, rng: ^Rng, result: ^Result) -> (next_word: int, err: Error) {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = context.allocator == context.temp_allocator)
 	rt := &e.rt
 	t0 := time.tick_now()
 	prompt, guess, _ := prepare_text(chunk, e.bundle.remove_semicolons, context.temp_allocator)
@@ -659,18 +684,20 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 
 	// Words: the chunk's transcript aligned to its audio.
 	t0 = time.tick_now()
-	time_chunk_words(e, source, source_words[first_word:next_word], first_word, result.audio[chunk_start:], f64(chunk_start) / f64(e.bundle.sample_rate), &result.words)
+	time_chunk_words(e, source, source_words[first_word:next_word], first_word, chunk_start, result)
 	result.stats.align += time.tick_since(t0)
 	return next_word, nil
 }
 
-// Times `words` (source spans, the first being source word `first`) in a
-// chunk's audio starting `offset` seconds into the result. When the
-// aligner cannot place them, they share the chunk's span by length,
-// marked estimated.
+// Times `words` (source spans, the first being source word `first`) in the
+// chunk's audio, from sample `chunk_start` of the result, and adds them
+// with their texts. When the aligner cannot place them, they share the
+// chunk's span by length, marked estimated.
 @(private)
-time_chunk_words :: proc(e: ^Engine, source: string, words: []Span, first: int, audio: []f32, offset: f64, out: ^[dynamic]Word) {
+time_chunk_words :: proc(e: ^Engine, source: string, words: []Span, first: int, chunk_start: int, result: ^Result) {
 	n := len(words)
+	audio := result.audio[chunk_start:]
+	offset := f64(chunk_start) / f64(e.bundle.sample_rate)
 	texts := make([]string, n, context.temp_allocator)
 	for w, k in words do texts[k] = source[w.begin:w.end]
 	spans := make([]align.Span, n, context.temp_allocator)
@@ -687,6 +714,8 @@ time_chunk_words :: proc(e: ^Engine, source: string, words: []Span, first: int, 
 		}
 	}
 	for sp, k in spans {
-		append(out, Word{texts[k], first + k, offset + sp.start, offset + sp.end, !sp.aligned})
+		begin := len(result.text)
+		append(&result.text, texts[k])
+		append(&result.words, Word{{begin, len(result.text)}, first + k, offset + sp.start, offset + sp.end, !sp.aligned})
 	}
 }

@@ -8,9 +8,11 @@
 // fed straight back as the next run's inputs (the model's state), and
 // inputs made from caller memory borrow it without copying.
 //
-// ORT starts no threads: every session runs its graph on the thread that
-// calls run (one intra-op and one inter-op thread, which ORT counts as the
-// caller's own). Parallelism is the caller's, across runs.
+// ORT runs no graph on threads of its own: every session runs on the thread
+// that calls run (one intra-op and one inter-op thread, which ORT counts as
+// the caller's own), so parallelism is the caller's, across runs. Creating
+// the environment starts one thread of ORT's, which waits idle for the life
+// of the process (it outlives the env, so the library stays loaded).
 package ort
 
 import "core:c"
@@ -54,6 +56,7 @@ SLOT :: enum {
 	Run                                  = 9,
 	Create_Session_Options               = 10,
 	Set_Session_Execution_Mode           = 13,
+	Disable_Cpu_Mem_Arena                = 19,
 	Set_Session_Graph_Optimization_Level = 23,
 	Set_Intra_Op_Num_Threads             = 24,
 	Set_Inter_Op_Num_Threads             = 25,
@@ -95,6 +98,7 @@ Runtime :: struct {
 	set_opt_level:   proc "c" (o: ^Session_Options, level: c.int) -> ^Status,
 	set_intra:       proc "c" (o: ^Session_Options, n: c.int) -> ^Status,
 	set_inter:       proc "c" (o: ^Session_Options, n: c.int) -> ^Status,
+	disable_arena:   proc "c" (o: ^Session_Options) -> ^Status,
 	input_count:     proc "c" (s: ^Session, out: ^c.size_t) -> ^Status,
 	output_count:    proc "c" (s: ^Session, out: ^c.size_t) -> ^Status,
 	input_name:      proc "c" (s: ^Session, i: c.size_t, a: ^Allocator, out: ^cstring) -> ^Status,
@@ -153,6 +157,7 @@ init :: proc(rt: ^Runtime, library_path: string) -> (err: Error) {
 	rt.set_opt_level = slot(api, .Set_Session_Graph_Optimization_Level, type_of(rt.set_opt_level))
 	rt.set_intra = slot(api, .Set_Intra_Op_Num_Threads, type_of(rt.set_intra))
 	rt.set_inter = slot(api, .Set_Inter_Op_Num_Threads, type_of(rt.set_inter))
+	rt.disable_arena = slot(api, .Disable_Cpu_Mem_Arena, type_of(rt.disable_arena))
 	rt.input_count = slot(api, .Session_Get_Input_Count, type_of(rt.input_count))
 	rt.output_count = slot(api, .Session_Get_Output_Count, type_of(rt.output_count))
 	rt.input_name = slot(api, .Session_Get_Input_Name, type_of(rt.input_name))
@@ -210,6 +215,10 @@ load_model :: proc(rt: ^Runtime, path: string) -> (m: Model, err: Error) {
 	check(rt, rt.set_opt_level(so, ENABLE_ALL), "optimization level") or_return
 	check(rt, rt.set_intra(so, 1), "intra-op threads") or_return
 	check(rt, rt.set_inter(so, 1), "inter-op threads") or_return
+	// Without its CPU arena a session frees what a run allocated, where the
+	// arena would keep the session's peak (every line in flight's state) for
+	// its life. Outputs are the same.
+	check(rt, rt.disable_arena(so), "CPU arena") or_return
 
 	// ORT takes paths as ORTCHAR_T: UTF-16 on Windows, UTF-8 elsewhere.
 	when ODIN_OS == .Windows {

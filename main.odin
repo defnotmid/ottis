@@ -205,12 +205,12 @@ words_json :: proc(text: string, r: ^pocket.Result) -> string {
 	for c, i in r.chunks {
 		if i > 0 do strings.write_string(&b, ",")
 		fmt.sbprintf(&b, "\n  {{\"id\": %d, \"start\": %.3f, \"end\": %.3f, \"text\": ", i, c.start, c.end)
-		quote(&b, c.text)
+		quote(&b, pocket.text_of(r, c.text))
 		strings.write_string(&b, `, "words": [`)
 		for w, k in r.words[c.first_word:][:c.word_count] {
 			if k > 0 do strings.write_string(&b, ",")
 			strings.write_string(&b, "\n    {\"word\": ")
-			quote(&b, w.text)
+			quote(&b, pocket.text_of(r, w.text))
 			fmt.sbprintf(&b, `, "start": %.3f, "end": %.3f`, w.start, w.end)
 			if w.estimated do strings.write_string(&b, `, "estimated": true`)
 			strings.write_string(&b, "}")

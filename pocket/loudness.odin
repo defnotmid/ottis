@@ -68,20 +68,19 @@ integrated_loudness :: proc(samples: []f32, rate: int) -> f64 {
 // samples of the ends. Silence reads -180.
 true_peak :: proc(samples: []f32) -> f64 {
 	TAPS :: 8
-	kernel: [3][2 * TAPS]f32
-	for &row, ph in kernel {
+	// One row per in-between phase: kernel * window gives the three.
+	kernel: matrix[3, 2 * TAPS]f32
+	for ph in 0 ..< 3 {
 		frac := f64(ph + 1) / 4
-		for &w, k in row do w = f32(lanczos(f64(k - TAPS + 1) - frac, TAPS))
+		for k in 0 ..< 2 * TAPS do kernel[ph, k] = f32(lanczos(f64(k - TAPS + 1) - frac, TAPS))
 	}
 	peak: f32
 	for v in samples do peak = max(peak, abs(v))
 	for i in TAPS - 1 ..< len(samples) - TAPS {
-		win := samples[i - TAPS + 1:][:2 * TAPS]
-		for &row in kernel {
-			sum: f32
-			#no_bounds_check for k in 0 ..< 2 * TAPS do sum += win[k] * row[k]
-			peak = max(peak, abs(sum))
-		}
+		win: [2 * TAPS]f32
+		copy(win[:], samples[i - TAPS + 1:][:2 * TAPS])
+		phases := (kernel * win)[0] // a one-column matrix
+		peak = max(peak, abs(phases[0]), abs(phases[1]), abs(phases[2]))
 	}
 	return 20 * math.log10(max(f64(peak), 1e-9))
 }

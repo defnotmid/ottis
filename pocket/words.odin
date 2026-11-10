@@ -6,7 +6,7 @@ import "core:unicode/utf8"
 
 // A word of the source text and when it is spoken.
 Word :: struct {
-	text:      string, // as written in the source text
+	text:      Span, // as written in the source text, in the result's `text` (`text_of`)
 	index:     int, // position among the source text's words
 	start:     f64, // seconds
 	end:       f64,

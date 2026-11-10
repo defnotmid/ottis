@@ -9,6 +9,7 @@ word is spoken, which onimite's `captions{}` reads as is.
 
 ```sh
 git clone -b v0.0.25 https://github.com/defnotmid/oicut ../oicut   # next to ottis
+mkdir -p build
 odin build . -o:speed -collection:deps=.. -out:build/ottis
 build/ottis say "The keeper climbed the spiral stairs." -o line.wav -words line.json
 build/ottis say -f script.txt -voice marius -seed 3 -o scene.wav -words scene.json
@@ -78,6 +79,9 @@ pocket.synthesize(&engine, &voice, "Hello there.", pocket.DEFAULT_OPTIONS, &resu
 // result.audio: mono f32 at result.sample_rate (24 kHz), at -23 LUFS
 // result.words: { text, index, start, end, estimated } for every source word
 // result.chunks: generated chunks with their spans and word ranges
+// a word's or chunk's text is a span of result.text: pocket.text_of(&result, word.text)
+// the result owns all of it: the text it was spoken from may go
+pocket.result_destroy(&result)                     // frees it where it was made
 
 // several lines over the caller's pool (oicut's common.Work_Pool; nil runs
 // them in order on this thread), each line's failure in its result's err:
@@ -88,12 +92,14 @@ pocket.synthesize_batch(&engine, pool, jobs, results)
 
 ottis starts no threads, and ONNX Runtime runs no graph on threads of its
 own: each runs on the thread that calls (the runtime's environment keeps
-one idle thread). After `engine_init` the engine is read-only:
+one idle thread). After `engine_init` the engine is read-only (but for the
+encoder, which the first `voice_clone` loads under a lock):
 `synthesize` can run on several threads at once with their own `Result`s,
 and gives the same samples as when run alone. `synthesize_batch` spreads
 whole lines over the pool, so a batch takes as many cores, and as much
-memory (about 150 to 190 MB per line in flight on Linux x64), as the pool
-runs tasks at once. `pocket.VERSION` changes whenever the output for the
+memory (at its peak about 140 MB per line in flight on Linux x64), as the
+pool runs tasks at once. Sessions keep no memory arena, so a line's memory
+is freed when it ends (the C allocator may hold it until trimmed). `pocket.VERSION` changes whenever the output for the
 same inputs does: a store of synthesized lines keys on it, the pins in
 `assets`, the text, the voice and the options.
 
