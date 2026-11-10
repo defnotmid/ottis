@@ -111,7 +111,7 @@ a_result_owns_its_memory :: proc(t: ^testing.T) {
 	for c, i in want.chunks do testing.expect_value(t, text_of(&got, got.chunks[i].text), text_of(&want, c.text))
 
 	arena: mem.Arena
-	backing := make([]u8, 16 << 20)
+	backing := make([]u8, 64 << 20)
 	defer delete(backing)
 	mem.arena_init(&arena, backing)
 	jobs := []Job{{&voice, "The lamp is lit.", DEFAULT_OPTIONS}, {&voice, "", DEFAULT_OPTIONS}}
@@ -128,6 +128,19 @@ a_result_owns_its_memory :: proc(t: ^testing.T) {
 		for &r in made do result_destroy(&r)
 	}
 	testing.expectf(t, len(track.bad_free_array) == 0, "%d frees of memory the context's allocator never gave out", len(track.bad_free_array))
+
+	// A result that already holds a line keeps its allocator: a later batch
+	// given another one adds to it there, its error too.
+	reused: [2]Result
+	synthesize_batch(&e, nil, jobs, reused[:], mem.arena_allocator(&arena))
+	other: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&other, context.allocator)
+	defer mem.tracking_allocator_destroy(&other)
+	synthesize_batch(&e, nil, jobs, reused[:], mem.tracking_allocator(&other))
+	testing.expect(t, reused[0].err == nil && len(reused[0].chunks) == 2, "the reused line was not added to")
+	testing.expect(t, reused[1].err != nil, "an empty line did not fail")
+	for &r in reused do result_destroy(&r)
+	testing.expectf(t, len(other.allocation_map) == 0, "%d allocations of reused results left in the other allocator", len(other.allocation_map))
 }
 
 // A batch gives each line what `synthesize` gives it: with no pool, on a

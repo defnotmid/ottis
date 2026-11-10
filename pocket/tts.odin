@@ -66,9 +66,10 @@ Chunk_Info :: struct {
 
 // What `synthesize` makes, all of it owned: the words' and chunks' texts are
 // copied into `text` and named by byte span, so a result outlives the text
-// it was spoken from. Its parts come from the context's allocator while
-// `synthesize` runs (one allocator per result), kept in `allocator` so
-// `result_destroy` frees them there.
+// it was spoken from. Its parts, and the errors that `synthesize` returns
+// for it, come from `allocator`: the context's allocator at the first
+// `synthesize` into it, which later ones keep to, and where `result_destroy`
+// frees them.
 Result :: struct {
 	audio:       [dynamic]f32, // mono, `sample_rate`, at LOUDNESS_TARGET
 	sample_rate: int,
@@ -481,8 +482,9 @@ voice_destroy :: proc(v: ^Voice) {
 // by chunk, when it is Odin's default one; a result that lives in the temp
 // allocator itself is kept (not one in an allocator built on it).
 synthesize :: proc(e: ^Engine, voice: ^Voice, text: string, options: Options, result: ^Result) -> Error {
-	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = context.allocator == context.temp_allocator)
 	if result.allocator.procedure == nil do result.allocator = context.allocator
+	context.allocator = result.allocator
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD(ignore = context.allocator == context.temp_allocator)
 	result.sample_rate = e.bundle.sample_rate
 	chunks, ok := split_chunks(&e.tok, text, e.bundle.max_token_per_chunk, e.bundle.remove_semicolons)
 	if !ok do return fmt.aprintf("nothing to say")
@@ -516,7 +518,8 @@ Job :: struct {
 // size. Lines differ in length, so each of the pool's tasks takes the next
 // line not yet taken rather than a fixed range of them. A failed line
 // leaves its error in its result's `err`, and the others still complete.
-// Results come from `allocator`, which must be thread-safe when the pool
+// Results come from `allocator` (one that already holds a line keeps its
+// own; see `Result`), which must be thread-safe when the pool
 // runs tasks at once. A line's scratch is the running thread's temp
 // allocator (see `synthesize`).
 synthesize_batch :: proc(e: ^Engine, pool: ^common.Work_Pool, jobs: []Job, results: []Result, allocator := context.allocator) {
