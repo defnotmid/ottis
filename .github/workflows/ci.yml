@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Odin nightly ottis is developed against (same pin as onimite).
+  ODIN_VERSION: dev-2026-11a
+
+# ottis reads oicut (audio decoding and WAV writing) through
+# `-collection:deps=..`, so the job checks it out beside ottis, at the tag the
+# README pins:
+#   $GITHUB_WORKSPACE/{ottis,oicut}
+# The tests that synthesize need the model (`ottis fetch`: ONNX Runtime, the
+# english_2026-04 bundle, the aligner and the voices, about 850 MB) and skip
+# without it, so it is fetched into $OTTIS_DATA and cached by the pins it is
+# checked against: a cache miss downloads it once, each file checked against
+# its pin as it lands. Four voices, so the loudness test has voices to
+# compare. Windows is type-checked only.
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      OTTIS_DATA: ${{ github.workspace }}/ottis-data
+      VOICES: alba george marius vera
+    defaults:
+      run:
+        working-directory: ottis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ottis
+      - uses: actions/checkout@v4
+        with:
+          repository: defnotmid/oicut
+          ref: v0.0.25
+          path: oicut
+
+      - name: Cache Odin
+        id: odin-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.odin
+          key: odin-${{ runner.os }}-${{ runner.arch }}-${{ env.ODIN_VERSION }}-v1
+
+      - name: Install Odin
+        if: steps.odin-cache.outputs.cache-hit != 'true'
+        run: |
+          case "$RUNNER_OS" in
+            Linux) asset="odin-linux-amd64-$ODIN_VERSION.tar.gz" ;;
+            macOS) asset="odin-macos-arm64-$ODIN_VERSION.tar.gz" ;;
+          esac
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/odin.tar.gz" \
+            "https://github.com/odin-lang/Odin/releases/download/$ODIN_VERSION/$asset"
+          mkdir -p ~/.odin
+          tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C ~/.odin --strip-components=1
+
+      - name: Set up Odin
+        run: |
+          echo "$HOME/.odin" >> "$GITHUB_PATH"
+          echo "ODIN_ROOT=$HOME/.odin" >> "$GITHUB_ENV"
+
+      - name: Install libcurl (Linux)
+        # Downloads go through the system libcurl, which the binary links.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libcurl4-openssl-dev
+
+      - name: Build
+        run: |
+          mkdir -p build
+          odin build . -o:speed -collection:deps=.. -vet -strict-style -out:build/ottis
+
+      - name: Restore the model
+        id: model-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OTTIS_DATA }}
+          key: ottis-data-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ottis/assets/pins.odin') }}
+
+      - name: Fetch the model
+        run: for v in $VOICES; do build/ottis fetch -voice "$v"; done
+
+      # Saved before the tests, so a failing test does not download it again.
+      - name: Save the model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.OTTIS_DATA }}
+          key: ${{ steps.model-cache.outputs.cache-primary-key }}
+
+      - name: Test
+        # One test at a time: the synthesis tests each load the model, and
+        # run together they peak at about 6 GB (1.9 GB one at a time), near
+        # the hosted macOS runner's 7 GB.
+        run: |
+          for p in align assets pocket spm; do
+            odin test "$p" -collection:deps=.. -vet -strict-style -define:ODIN_TEST_THREADS=1 -out:"build/${p}_test"
+          done
+
+      - name: Say a line
+        run: build/ottis say "The keeper climbed the spiral stairs." -o build/line.wav -words build/line.json
+
+      - name: Check the other targets and the mascot tool
+        if: runner.os == 'Linux'
+        run: |
+          odin check . -collection:deps=.. -vet -strict-style -target:darwin_arm64
+          odin check . -collection:deps=.. -vet -strict-style -target:windows_amd64
+          odin check . -collection:deps=.. -vet -strict-style -target:linux_arm64
+          odin check tools/mascot -collection:deps=.. -vet -strict-style
