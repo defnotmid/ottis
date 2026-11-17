@@ -83,10 +83,12 @@ word timings; `g2p_en` for the OOV model.
 
 ## Milestone 0: speaking through onnxruntime
 
-**Status (2026-10-13): working on Linux x64 and macOS arm64.** `ottis say`
-produces speech that Whisper small.en transcribes word for word, with word
-timings from forced alignment, deterministic per seed across runs (threads
-fixed at 4: at 8 or more ONNX Runtime gives other samples).
+**Status (2026-11-17): working on Linux x64 and arm64, macOS arm64 and
+Windows x64**, each built, tested and run by CI on its own runner. `ottis
+say` produces speech that Whisper small.en transcribes word for word, with
+word timings from forced alignment, deterministic per seed on a given CPU
+(every graph on one thread since v0.0.7; at first threads were fixed at 4,
+as at 8 or more ONNX Runtime gave other samples).
 
 What landed differs from the sketch below in three ways:
 
@@ -122,26 +124,23 @@ pool. On v0.0.14 (2026-11-10, a loaded 9900X3D) a 5.68 s line takes
 1.9-2.5 s on one core (2.3-3.0x real time): backbone 56%, alignment 18%,
 decode 17%, flow 5%, text and prompt 2-3%.
 
-Verified: tokenizer ids equal SentencePiece's (`odin test spm`); fetch,
-extract and patch on Linux x64; zip (Windows) and macOS/arm64 tar
-extraction on the real release archives; `odin check` for macOS arm64 and
-Linux arm64, and a Windows x64 object build. Run on macOS arm64 (M4,
-2026-10-13): fetch, `say` and `fetch -verify` work, both test suites pass,
-and output is deterministic across runs. Not yet run: Windows and Linux
-arm64 binaries.
+Verified: tokenizer ids equal SentencePiece's (`odin test spm`). CI
+(`.github/workflows/ci.yml`, since 2026-11-16) builds with `-vet
+-strict-style` on Linux x64 and arm64, macOS arm64 and Windows x64, fetches
+the model there (libcurl, WinHTTP; the release's tar or zip), runs the
+align, assets, pocket and spm suites against it and says a line. The
+first Windows run found a line past the KV cache's end crashing the
+process inside ONNX Runtime; ottis now refuses such a line before the
+backbone runs. v0.0.15 and v0.0.16 were also run on an M4 Mac.
 
-Next for this lane:
+Done in this lane: every graph on one thread, the caller's, with no ORT
+pool (v0.0.7; process time had been ~6x wall time as ORT threads spun);
+voice cloning from a recording through `mimi_encoder.onnx`; onimite's
+`say()`, which synthesizes at load and registers the clip, its captions
+and word cues; runs on Windows and Linux arm64.
 
-- Done in v0.0.7: process time was ~6x wall time (ORT threads spin); every
-  graph now runs on one thread, the caller's, and ORT spins no pool.
-  Still open: the int8 graphs, and decoding on a second thread while the
-  backbone runs (upstream does), then measure.
-- onimite: a `say()` binding that synthesizes at load (content-addressed
-  cache, one engine per process on onimite's pool) and registers the clip,
-  its captions and word cues.
-- Voice cloning from a WAV through `mimi_encoder.onnx` (needs a WAV reader
-  and resampler).
-- Run on Windows and Linux arm64.
+Next for this lane: the int8 graphs, and decoding on a second thread while
+the backbone runs (upstream does), then measure.
 
 The original sketch: the quickest route to audio, after `../dangersnail`'s pattern: copy its
 API-27 adapter (`extras/onnx_runtime`, ~1300 lines: runtime/session owners,
