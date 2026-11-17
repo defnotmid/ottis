@@ -184,7 +184,8 @@ a_batch_gives_each_line_its_own_samples :: proc(t: ^testing.T) {
 }
 
 // A voice so far along the KV cache that a line cannot fit fails: it does not
-// return the part that fit.
+// return the part that fit, and the backbone never runs past the cache's end
+// (where ONNX Runtime fails on one platform and crashes on another).
 @(test)
 a_line_past_the_kv_cache_fails :: proc(t: ^testing.T) {
 	e: Engine
@@ -198,6 +199,7 @@ a_line_past_the_kv_cache_fails :: proc(t: ^testing.T) {
 	result: Result
 	defer result_destroy(&result)
 	err := synthesize(&e, &voice, TWO_CHUNKS, DEFAULT_OPTIONS, &result)
-	testing.expect(t, err != nil, "synthesize returned no error")
-	if err != nil do delete(err.?)
+	if !testing.expect(t, err != nil, "synthesize returned no error") do return
+	testing.expectf(t, strings.contains(err.?, "KV cache"), "not refused before the backbone ran: %s", err.?)
+	delete(err.?)
 }

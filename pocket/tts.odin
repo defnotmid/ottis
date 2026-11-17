@@ -117,6 +117,7 @@ Engine :: struct {
 	main_text:    int,
 	main_cond:    int,
 	main_eos:     int,
+	kv_room:      i64,   // positions the backbone's KV cache holds
 	dec_in:       []int, // per Mimi state entry (-1: not a decoder input)
 	dec_out:      []int,
 	dec_latent:   int,
@@ -198,6 +199,19 @@ engine_init :: proc(e: ^Engine, root, library: string) -> (err: Error) {
 	need(e.main_cond, "conditioning") or_return
 	need(e.main_eos, "eos_logit") or_return
 	if len(e.main.inputs) != len(fm) + 2 do return fmt.aprintf("backbone has inputs outside the manifest")
+	// Each layer's cache holds the same positions, and its `step` counts
+	// those taken.
+	e.kv_room = -1
+	for s in fm {
+		switch s.key {
+		case "cache":
+			if len(s.shape) != 5 || (e.kv_room >= 0 && s.shape[2] != e.kv_room) do return fmt.aprintf("backbone state %s is not a cache like the others", s.input_name)
+			e.kv_room = s.shape[2]
+		case "step":
+			if s.dtype != "int64" || len(s.shape) != 1 || s.shape[0] != 1 do return fmt.aprintf("backbone state %s is not one int64", s.input_name)
+		}
+	}
+	if e.kv_room < 0 do return fmt.aprintf("backbone has no KV cache")
 
 	mm := e.bundle.mimi_state_manifest
 	e.dec_in = make([]int, len(mm))
@@ -572,7 +586,17 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 	defer ort.release(rt, embeddings)
 	result.stats.text += time.tick_since(t0)
 
-	// Backbone: voice state, then the text prompt.
+	// Backbone: voice state, then the text prompt. Every run takes positions
+	// in its KV cache, after the voice's: one that would pass its end is
+	// refused here, as the graph's behaviour there is not defined.
+	used: i64
+	for s, i in e.bundle.flow_lm_state_manifest do if s.key == "step" do used = max(used, host_i64(&voice.state, i))
+	take :: proc(used: ^i64, n: int, room: i64) -> Error {
+		if used^ + i64(n) > room do return fmt.aprintf("the line does not fit in the backbone's KV cache: %d of its %d positions are taken, %d more needed", used^, room, n)
+		used^ += i64(n)
+		return nil
+	}
+	take(&used, n_tokens, e.kv_room) or_return
 	t0 = time.tick_now()
 	n_state := len(e.main_in)
 	state := make([]^ort.Value, n_state, context.temp_allocator)
@@ -612,6 +636,7 @@ synthesize_chunk :: proc(e: ^Engine, voice: ^Voice, source: string, source_words
 	shape_buf: [8]i64
 	eos_step := -1
 	for step in 0 ..< max_frames {
+		take(&used, 1, e.kv_room) or_return
 		t1 := time.tick_now()
 		seq := ort.tensor_f32(rt, current, {1, 1, i64(latent_dim)}) or_return
 		run_err := run_main(e, seq, empty_text, state, inputs, outputs)
