@@ -20,12 +20,13 @@ env:
 # `-collection:deps=..`, so the job checks it out beside ottis, at the tag the
 # README pins:
 #   $GITHUB_WORKSPACE/{ottis,oicut}
+# Every platform the README lists is built, tested and run on its own runner.
 # The tests that synthesize need the model (`ottis fetch`: ONNX Runtime, the
 # english_2026-04 bundle, the aligner and the voices, about 850 MB) and skip
 # without it, so it is fetched into $OTTIS_DATA and cached by the pins it is
 # checked against: a cache miss downloads it once, each file checked against
 # its pin as it lands. Four voices, so the loudness test has voices to
-# compare. Windows is type-checked only.
+# compare.
 
 jobs:
   test:
@@ -33,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -41,6 +42,7 @@ jobs:
       VOICES: alba george marius vera
     defaults:
       run:
+        shell: bash
         working-directory: ottis
     steps:
       - uses: actions/checkout@v4
@@ -62,19 +64,32 @@ jobs:
       - name: Install Odin
         if: steps.odin-cache.outputs.cache-hit != 'true'
         run: |
-          case "$RUNNER_OS" in
-            Linux) asset="odin-linux-amd64-$ODIN_VERSION.tar.gz" ;;
-            macOS) asset="odin-macos-arm64-$ODIN_VERSION.tar.gz" ;;
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) asset="odin-linux-amd64-$ODIN_VERSION.tar.gz" ;;
+            Linux-ARM64) asset="odin-linux-arm64-$ODIN_VERSION.tar.gz" ;;
+            macOS-ARM64) asset="odin-macos-arm64-$ODIN_VERSION.tar.gz" ;;
+            Windows-X64) asset="odin-windows-amd64-$ODIN_VERSION.zip" ;;
           esac
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/odin.tar.gz" \
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" \
             "https://github.com/odin-lang/Odin/releases/download/$ODIN_VERSION/$asset"
-          mkdir -p ~/.odin
-          tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C ~/.odin --strip-components=1
+          # The archive's contents, without its top directory if it has one.
+          unpacked="$RUNNER_TEMP/odin-unpacked"
+          mkdir -p "$unpacked" ~/.odin
+          case "$asset" in
+            *.zip) 7z x -y -bd -o"$unpacked" "$RUNNER_TEMP/$asset" > /dev/null ;;
+            *) tar -xzf "$RUNNER_TEMP/$asset" -C "$unpacked" ;;
+          esac
+          top=("$unpacked"/*)
+          if [ "${#top[@]}" -eq 1 ] && [ -d "${top[0]}" ]; then unpacked="${top[0]}"; fi
+          cp -R "$unpacked"/. ~/.odin/
 
       - name: Set up Odin
         run: |
-          echo "$HOME/.odin" >> "$GITHUB_PATH"
-          echo "ODIN_ROOT=$HOME/.odin" >> "$GITHUB_ENV"
+          root="$HOME/.odin"
+          if [ "$RUNNER_OS" = Windows ]; then root=$(cygpath -w "$root"); fi
+          echo "$root" >> "$GITHUB_PATH"
+          echo "ODIN_ROOT=$root" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = Windows ]; then echo "EXE=.exe" >> "$GITHUB_ENV"; fi
 
       - name: Install libcurl (Linux)
         # Downloads go through the system libcurl, which the binary links.
@@ -85,8 +100,9 @@ jobs:
 
       - name: Build
         run: |
+          odin version
           mkdir -p build
-          odin build . -o:speed -collection:deps=.. -vet -strict-style -out:build/ottis
+          odin build . -o:speed -collection:deps=.. -vet -strict-style -out:"build/ottis$EXE"
 
       - name: Restore the model
         id: model-cache
@@ -96,7 +112,7 @@ jobs:
           key: ottis-data-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ottis/assets/pins.odin') }}
 
       - name: Fetch the model
-        run: for v in $VOICES; do build/ottis fetch -voice "$v"; done
+        run: for v in $VOICES; do "build/ottis$EXE" fetch -voice "$v"; done
 
       # Saved before the tests, so a failing test does not download it again.
       - name: Save the model
@@ -112,16 +128,12 @@ jobs:
         # the hosted macOS runner's 7 GB.
         run: |
           for p in align assets pocket spm; do
-            odin test "$p" -collection:deps=.. -vet -strict-style -define:ODIN_TEST_THREADS=1 -out:"build/${p}_test"
+            odin test "$p" -collection:deps=.. -vet -strict-style -define:ODIN_TEST_THREADS=1 -out:"build/${p}_test$EXE"
           done
 
       - name: Say a line
-        run: build/ottis say "The keeper climbed the spiral stairs." -o build/line.wav -words build/line.json
+        run: '"build/ottis$EXE" say "The keeper climbed the spiral stairs." -o build/line.wav -words build/line.json'
 
-      - name: Check the other targets and the mascot tool
-        if: runner.os == 'Linux'
-        run: |
-          odin check . -collection:deps=.. -vet -strict-style -target:darwin_arm64
-          odin check . -collection:deps=.. -vet -strict-style -target:windows_amd64
-          odin check . -collection:deps=.. -vet -strict-style -target:linux_arm64
-          odin check tools/mascot -collection:deps=.. -vet -strict-style
+      - name: Check the mascot tool
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: odin check tools/mascot -collection:deps=.. -vet -strict-style
