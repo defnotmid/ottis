@@ -143,7 +143,7 @@ ensure :: proc(root: string, pin: Pin, verify := false, progress: Progress = nil
 RUNTIME_DIR :: "onnxruntime-" + ORT_VERSION
 
 // The ONNX Runtime library for this platform, extracted from the pinned
-// release with its LICENSE and ThirdPartyNotices.txt. Returns its path.
+// package with its LICENSE and ThirdPartyNotices.txt. Returns its path.
 ensure_runtime :: proc(root: string, verify := false, progress: Progress = nil) -> (library: string, err: Error) {
 	dir := path_in(root, RUNTIME_DIR)
 	names := [3]string{RUNTIME.library, "LICENSE", "ThirdPartyNotices.txt"}
@@ -152,13 +152,13 @@ ensure_runtime :: proc(root: string, verify := false, progress: Progress = nil) 
 	for name in names do present &&= os.exists(path_in(dir, name))
 	if present && !verify do return path_in(dir, RUNTIME.library, context.allocator), nil
 
-	ensure(root, RUNTIME.archive, verify, progress) or_return
+	ensure(root, RUNTIME_ARCHIVE, verify, progress) or_return
 	if !present do say(progress, "extracting %s", RUNTIME.library)
-	archive, rerr := os.read_entire_file(path_in(root, RUNTIME.archive.path), context.allocator)
-	if rerr != nil do return "", fmt.aprintf("reading %s: %v", RUNTIME.archive.path, rerr)
+	archive, rerr := os.read_entire_file(path_in(root, RUNTIME_ARCHIVE.path), context.allocator)
+	if rerr != nil do return "", fmt.aprintf("reading %s: %v", RUNTIME_ARCHIVE.path, rerr)
 	defer delete(archive)
 	make_dirs(dir) or_return
-	files := extract(archive, members[:], strings.has_suffix(RUNTIME.archive.path, ".zip")) or_return
+	files := extract(archive, members[:]) or_return
 	defer {
 		for f in files do delete(f)
 		delete(files)

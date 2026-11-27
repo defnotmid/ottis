@@ -11,45 +11,29 @@ Pin :: struct {
 	size:   i64,
 }
 
-// ONNX Runtime 1.30.0 CPU release from github.com/microsoft/onnxruntime
-// (MIT). Only the library and the licence files are kept from the archive.
+// ONNX Runtime 1.30.0 CPU builds from Microsoft's NuGet package
+// Microsoft.ML.OnnxRuntime (MIT): github.com/microsoft/onnxruntime, where
+// the release archives were, is gone. One package holds every platform's
+// library; only this platform's and the licence files are kept from it.
 ORT_VERSION :: "1.30.0"
 
+RUNTIME_ARCHIVE :: Pin{"cache/microsoft.ml.onnxruntime.1.30.0.nupkg", "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.30.0/microsoft.ml.onnxruntime.1.30.0.nupkg", "30df119bd9164eaa187666d93147448fdd4a9a1a3caf83f1505daf7af2d1c5d2", 157230753}
+
 Runtime_Release :: struct {
-	archive: Pin,
-	member:  string, // path of the library inside the archive, after the top directory
+	member:  string, // path of the library inside the package
 	library: string, // file name it is kept under
 }
 
-@(private)
-ORT_URL :: "https://github.com/microsoft/onnxruntime/releases/download/v" + ORT_VERSION + "/"
-
 when ODIN_OS == .Linux && ODIN_ARCH == .amd64 {
-	RUNTIME :: Runtime_Release {
-		archive = {"cache/onnxruntime-linux-x64-1.30.0.tgz", ORT_URL + "onnxruntime-linux-x64-1.30.0.tgz", "a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd", 11306877},
-		member  = "lib/libonnxruntime.so.1.30.0",
-		library = "libonnxruntime.so.1.30.0",
-	}
+	RUNTIME :: Runtime_Release{"runtimes/linux-x64/native/libonnxruntime.so", "libonnxruntime.so.1.30.0"}
 } else when ODIN_OS == .Linux && ODIN_ARCH == .arm64 {
-	RUNTIME :: Runtime_Release {
-		archive = {"cache/onnxruntime-linux-aarch64-1.30.0.tgz", ORT_URL + "onnxruntime-linux-aarch64-1.30.0.tgz", "e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da", 10269495},
-		member  = "lib/libonnxruntime.so.1.30.0",
-		library = "libonnxruntime.so.1.30.0",
-	}
+	RUNTIME :: Runtime_Release{"runtimes/linux-arm64/native/libonnxruntime.so", "libonnxruntime.so.1.30.0"}
 } else when ODIN_OS == .Darwin && ODIN_ARCH == .arm64 {
-	RUNTIME :: Runtime_Release {
-		archive = {"cache/onnxruntime-osx-arm64-1.30.0.tgz", ORT_URL + "onnxruntime-osx-arm64-1.30.0.tgz", "6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012", 42373116},
-		member  = "lib/libonnxruntime.1.30.0.dylib",
-		library = "libonnxruntime.1.30.0.dylib",
-	}
+	RUNTIME :: Runtime_Release{"runtimes/osx-arm64/native/libonnxruntime.dylib", "libonnxruntime.1.30.0.dylib"}
 } else when ODIN_OS == .Windows && ODIN_ARCH == .amd64 {
-	RUNTIME :: Runtime_Release {
-		archive = {"cache/onnxruntime-win-x64-1.30.0.zip", ORT_URL + "onnxruntime-win-x64-1.30.0.zip", "c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949", 82645522},
-		member  = "lib/onnxruntime.dll",
-		library = "onnxruntime.dll",
-	}
+	RUNTIME :: Runtime_Release{"runtimes/win-x64/native/onnxruntime.dll", "onnxruntime.dll"}
 } else {
-	#panic("ottis: no pinned ONNX Runtime release for this platform")
+	#panic("ottis: no pinned ONNX Runtime build for this platform")
 }
 
 // Pocket TTS english_2026-04 exported to ONNX by KevinAHM

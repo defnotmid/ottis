@@ -6,7 +6,7 @@ fetch`, or the first `ottis say`), each pinned by SHA-256 in
 
 | What | From | Licence |
 | --- | --- | --- |
-| ONNX Runtime 1.30.0 (CPU) | github.com/microsoft/onnxruntime releases | MIT; its `LICENSE` and `ThirdPartyNotices.txt` are extracted next to the library |
+| ONNX Runtime 1.30.0 (CPU) | nuget.org package Microsoft.ML.OnnxRuntime 1.30.0 (Microsoft) | MIT; its `LICENSE` and `ThirdPartyNotices.txt` are extracted next to the library |
 | Pocket TTS `english_2026-04` weights | Kyutai, huggingface.co/kyutai/pocket-tts | CC-BY-4.0 |
 | ONNX export of those weights | huggingface.co/KevinAHM/pocket-tts-onnx | CC-BY-4.0 (fetched as `english_2026-04/LICENSE`) |
 | Precomputed voices | huggingface.co/kyutai/pocket-tts-without-voice-cloning | CC-BY-4.0; each voice's source recording carries its own licence, listed at huggingface.co/kyutai/tts-voices (`cosette` comes from Expresso and `jean` from EARS: non-commercial) |

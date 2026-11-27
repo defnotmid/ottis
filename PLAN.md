@@ -127,7 +127,7 @@ decode 17%, flow 5%, text and prompt 2-3%.
 Verified: tokenizer ids equal SentencePiece's (`odin test spm`). CI
 (`.github/workflows/ci.yml`, since 2026-11-16) builds with `-vet
 -strict-style` on Linux x64 and arm64, macOS arm64 and Windows x64, fetches
-the model there (libcurl, WinHTTP; the release's tar or zip), runs the
+the model there (libcurl, WinHTTP; ONNX Runtime from its NuGet zip), runs the
 align, assets, pocket and spm suites against it and says a line. The
 first Windows run found a line past the KV cache's end crashing the
 process inside ONNX Runtime; ottis now refuses such a line before the

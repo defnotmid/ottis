@@ -22,7 +22,9 @@ The binary needs nothing installed. On first use it downloads, into
 `$OTTIS_DATA` or the user data directory (`-data DIR` to override):
 
 - ONNX Runtime 1.30.0's library for the platform (Linux x64/arm64, macOS
-  arm64, Windows x64),
+  arm64, Windows x64), from Microsoft's NuGet package
+  `Microsoft.ML.OnnxRuntime` (157 MB, every platform's library in one; only
+  this platform's is kept),
 - the `english_2026-04` ONNX bundle (about 440 MB) and the chosen voice,
 - the word aligner, wav2vec2-base-960h as ONNX (378 MB),
 
